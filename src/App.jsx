@@ -131,29 +131,29 @@ function generateCaseId(existing) {
 }
 
 /* ---------------------------------------------------------------------- */
-/*  Claude API helper — calls our own /api/claude serverless function so   */
-/*  the Anthropic key never reaches the browser. (structured extraction    */
-/*  only — reports stay grounded in what was actually typed, never         */
-/*  fabricated)                                                            */
+/*  Gemini API helper — calls /api/gemini/generate server endpoint so the */
+/*  API key remains safely on the server. (structured extraction only —    */
+/*  reports stay grounded in what was actually typed, never fabricated)    */
 /* ---------------------------------------------------------------------- */
-async function callClaude(prompt, { json = false } = {}) {
-  const res = await fetch("/api/claude", {
+async function callGemini(prompt, { json = false, systemInstruction } = {}) {
+  const res = await fetch("/api/gemini/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1000,
-      messages: [{ role: "user", content: prompt }],
+      prompt,
+      json,
+      systemInstruction,
     }),
   });
-  if (!res.ok) throw new Error("AI request failed");
-  const data = await res.json();
-  const text = (data.content || []).map((b) => b.text || "").join("\n").trim();
-  if (json) {
-    const cleaned = text.replace(/```json|```/g, "").trim();
-    return JSON.parse(cleaned);
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || "AI request failed");
   }
-  return text;
+  const data = await res.json();
+  if (json) {
+    return data.data || (typeof data.text === "string" ? JSON.parse(data.text) : data.text);
+  }
+  return data.text || "";
 }
 
 /* ---------------------------------------------------------------------- */
@@ -310,10 +310,9 @@ function EntryForm({ cases, onSave }) {
     setAiError("");
     try {
       const schema = FIELDS.filter((f) => !f.auto).map((f) => f.key).join(", ");
+      const systemInstruction =
+        "You are an AI assistant for the National Children's Commission. Extract structured facts from a child-protection incident narrative for a case intake form. Only use information explicitly present in the text — never invent names, ages, dates or locations. Leave a field as an empty string \"\" if it is not stated.";
       const prompt =
-        `You extract structured facts from a child-protection incident narrative for a case ` +
-        `intake form. Only use information explicitly present in the text — never invent names, ` +
-        `ages, dates or locations. Leave a field as an empty string "" if it is not stated.\n\n` +
         `Return ONLY a JSON object (no markdown, no preamble) with exactly these keys: ${schema}.\n\n` +
         `Field guidance: reportType is "Initial-Report" or "Follow-up". status is one of ` +
         `${STATUS_OPTIONS.join("/")}. abuseType is one of ${ABUSE_TYPES.join("/")}. ` +
@@ -321,7 +320,7 @@ function EntryForm({ cases, onSave }) {
         `official Malawi districts if mentioned: ${MALAWI_DISTRICTS.join(", ")}. confidentialityLevel ` +
         `defaults to "High" for any case involving a minor unless stated otherwise.\n\n` +
         `Narrative:\n"""${narrative}"""`;
-      const extracted = await callClaude(prompt, { json: true });
+      const extracted = await callGemini(prompt, { json: true, systemInstruction });
       const diffKeys = {};
       setForm((f) => {
         const next = { ...f };
@@ -688,7 +687,7 @@ function Analytics({ cases }) {
 /* ---------------------------------------------------------------------- */
 function buildSingleCaseText(c) {
   const groups = [...new Set(FIELDS.map((f) => f.group))];
-  let out = `CHILD PROTECTION CASE REPORT\nConfidentiality: ${c.confidentialityLevel || "High"} — restricted distribution\n`;
+  let out = `NATIONAL CHILDREN'S COMMISSION\nCHILD PROTECTION CASE REPORT\nConfidentiality: ${c.confidentialityLevel || "High"} — restricted distribution\n`;
   out += `Generated: ${new Date().toLocaleString()}\n`;
   out += "=".repeat(60) + "\n\n";
   groups.forEach((g) => {
@@ -703,7 +702,7 @@ function buildSingleCaseText(c) {
 }
 
 function buildBatchText(cases) {
-  let out = `CHILD PROTECTION CASE REGISTER — SUMMARY REPORT\nGenerated: ${new Date().toLocaleString()}\nTotal cases: ${cases.length}\n`;
+  let out = `NATIONAL CHILDREN'S COMMISSION\nCHILD PROTECTION CASE REGISTER — SUMMARY REPORT\nGenerated: ${new Date().toLocaleString()}\nTotal cases: ${cases.length}\n`;
   out += "=".repeat(60) + "\n\n";
   out += "OVERVIEW\n--------\n";
   ["status", "abuseType", "district"].forEach((k) => {
@@ -731,13 +730,13 @@ function ReportModal({ target, cases, onClose }) {
     setLoading(true);
     try {
       const prompt = isSingle
-        ? `Write a concise, professional 3-sentence case synthesis for a child protection case file, ` +
+        ? `Write a concise, professional 3-sentence case synthesis for a National Children's Commission child protection case file, ` +
           `based strictly on the facts below — do not add anything not present. Neutral, factual, ` +
           `report-appropriate tone.\n\n${buildSingleCaseText(target)}`
-        : `Write a concise 4-sentence executive summary of this child protection case register for a ` +
-          `supervisor briefing, based strictly on the statistics and cases listed below — do not invent ` +
+        : `Write a concise 4-sentence executive summary of this National Children's Commission child protection case register for a ` +
+          `supervisor or commissioner briefing, based strictly on the statistics and cases listed below — do not invent ` +
           `figures. Neutral, factual tone.\n\n${buildBatchText(cases).slice(0, 6000)}`;
-      const summary = await callClaude(prompt);
+      const summary = await callGemini(prompt);
       setNarrative(summary);
     } catch (e) {
       setNarrative("(Could not generate an AI summary right now — the structured report below is unaffected.)");
@@ -936,8 +935,8 @@ export default function App() {
             <ShieldCheck size={18} color="#fff" />
           </div>
           <div>
-            <div style={{ fontFamily: "Fraunces, serif", fontWeight: 700, fontSize: 16.5, lineHeight: 1.1 }}>Case Register</div>
-            <div style={{ fontSize: 11, color: COLOR.inkSoft }}>Child protection intake &amp; tracking</div>
+            <div style={{ fontFamily: "Fraunces, serif", fontWeight: 700, fontSize: 16.5, lineHeight: 1.1 }}>National Children's Commission</div>
+            <div style={{ fontSize: 11, color: COLOR.inkSoft }}>Child Protection Case Register &amp; Tracking</div>
           </div>
         </div>
         <div style={{ display: "flex", gap: 6 }}>

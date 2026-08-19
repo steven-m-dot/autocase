@@ -1,0 +1,6 @@
+{
+  "name": "National Children's Commission — Case Register",
+  "description": "Child protection case register and tracking system for the National Children's Commission, featuring Gemini-powered intake autofill, registry management, analytics, and reporting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
