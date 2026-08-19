@@ -3,7 +3,9 @@ import Papa from "papaparse";
 import {
   ShieldCheck, ClipboardList, LayoutGrid, FileText, Sparkles,
   Upload, Download, Search, X, Printer, Copy, Check, AlertCircle,
-  ChevronRight, Plus, Loader2, Settings, RefreshCw, CloudOff, Cloud
+  ChevronRight, Plus, Loader2, Settings, RefreshCw, CloudOff, Cloud,
+  Filter, TrendingUp, Users, ShieldAlert, CheckCircle2, UserCheck,
+  Building, AlertTriangle
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -311,22 +313,32 @@ function EntryForm({ cases, onSave }) {
     try {
       const schema = FIELDS.filter((f) => !f.auto).map((f) => f.key).join(", ");
       const systemInstruction =
-        "You are an AI assistant for the National Children's Commission. Extract structured facts from a child-protection incident narrative for a case intake form. Only use information explicitly present in the text — never invent names, ages, dates or locations. Leave a field as an empty string \"\" if it is not stated.";
+        "You are an expert child protection caseworker AI for the National Children's Commission of Malawi. " +
+        "You extract structured facts from incident narratives, police blotters, news bulletins (e.g., Mibawa News, Zodiak, MBC), community reports, or field worker notes for official case intake registration. " +
+        "The narrative may be written in Chichewa, Tumbuka, Yao, English, or a mix of languages. " +
+        "Recognize Chichewa terms (e.g., 'mwana' = child, 'zaka' = years/age, 'ku simba / dambwe' = initiation camp, 'kumwalira / kufa' = died/death, 'Boma' = district, 'Mfumu yayikulu' = Traditional Authority / Senior Chief, 'Mudzi' = Village, 'wodulidwa' = circumcised, 'apilisi' = police). " +
+        "Translate facts into clear, professional English for the case record fields. " +
+        "Only extract facts explicitly stated or directly implied by the text. Leave any field as an empty string \"\" if not mentioned.";
       const prompt =
-        `Return ONLY a JSON object (no markdown, no preamble) with exactly these keys: ${schema}.\n\n` +
-        `Field guidance: reportType is "Initial-Report" or "Follow-up". status is one of ` +
-        `${STATUS_OPTIONS.join("/")}. abuseType is one of ${ABUSE_TYPES.join("/")}. ` +
-        `victimGender/perpetratorGender is one of ${GENDERS.join("/")}. district must be one of the ` +
-        `official Malawi districts if mentioned: ${MALAWI_DISTRICTS.join(", ")}. confidentialityLevel ` +
-        `defaults to "High" for any case involving a minor unless stated otherwise.\n\n` +
-        `Narrative:\n"""${narrative}"""`;
+        `Extract case information from the narrative into a JSON object with these exact keys: ${schema}.\n\n` +
+        `Field Rules & Allowed Values:\n` +
+        `- reportType: "Initial-Report" or "Follow-up" (default "Initial-Report")\n` +
+        `- status: "Open", "In Progress", "Referred", or "Closed" (use "In Progress" if investigation is underway, or "Open")\n` +
+        `- abuseType: "Physical", "Sexual", "Emotional", "Exploitation", "Neglect", or "Other"\n` +
+        `- victimGender / perpetratorGender: "Female", "Male", or "Not disclosed / Not stated"\n` +
+        `- district: Must be one of the official Malawi districts if mentioned: ${MALAWI_DISTRICTS.join(", ")}\n` +
+        `- confidentialityLevel: "High", "Medium", or "Low" (default "High" for minors or fatalities)\n` +
+        `- consentObtained: "Yes", "No", or "N/A"\n` +
+        `- description: Comprehensive English summary of the incident\n\n` +
+        `Narrative:\n"""\n${narrative}\n"""\n\n` +
+        `Return ONLY a valid JSON object matching the requested keys.`;
       const extracted = await callGemini(prompt, { json: true, systemInstruction });
       const diffKeys = {};
       setForm((f) => {
         const next = { ...f };
-        Object.keys(extracted).forEach((k) => {
-          if (extracted[k] && FIELDS.some((fd) => fd.key === k)) {
-            next[k] = extracted[k];
+        Object.keys(extracted || {}).forEach((k) => {
+          if (extracted[k] !== undefined && extracted[k] !== null && extracted[k] !== "" && FIELDS.some((fd) => fd.key === k)) {
+            next[k] = String(extracted[k]);
             diffKeys[k] = true;
           }
         });
@@ -335,7 +347,8 @@ function EntryForm({ cases, onSave }) {
       setChanged(diffKeys);
       setTimeout(() => setChanged({}), 4000);
     } catch (e) {
-      setAiError("Couldn't auto-fill from that text. You can still fill the form in manually.");
+      console.error("Autofill error:", e);
+      setAiError(e?.message || "Couldn't auto-fill from that text. You can still fill the form in manually.");
     } finally {
       setAiLoading(false);
     }
@@ -574,7 +587,7 @@ function CaseModal({ c, onClose, onUpdate, onDelete, onReport }) {
 /* ---------------------------------------------------------------------- */
 /*  Analytics                                                              */
 /* ---------------------------------------------------------------------- */
-const PIE_COLORS = [COLOR.teal, COLOR.amber, COLOR.rose, COLOR.sage, COLOR.tealDeep, "#B8AA8F"];
+const PIE_COLORS = [COLOR.teal, COLOR.amber, COLOR.rose, COLOR.sage, COLOR.tealDeep, "#B8AA8F", "#8E7DBE", "#5B8E7D"];
 
 function countBy(cases, key) {
   const m = {};
@@ -585,25 +598,54 @@ function countBy(cases, key) {
   return Object.entries(m).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
 }
 
-function StatCard({ label, value, color }) {
+function classifyAge(ageStr) {
+  if (!ageStr || isNaN(parseInt(ageStr, 10))) return "Age unstated";
+  const a = parseInt(ageStr, 10);
+  if (a <= 5) return "0–5 yrs (Early Childhood)";
+  if (a <= 11) return "6–11 yrs (Primary Age)";
+  if (a <= 14) return "12–14 yrs (Adolescent)";
+  if (a <= 17) return "15–17 yrs (Older Youth)";
+  return "18+ yrs (Adult / Other)";
+}
+
+function StatCard({ label, value, subtext, color, icon: Icon }) {
   return (
-    <div style={{ background: "#fff", borderRadius: 12, border: `1px solid ${COLOR.line}`, padding: "16px 18px", flex: "1 1 140px" }}>
-      <div style={{ fontFamily: "Fraunces, serif", fontSize: 28, fontWeight: 700, color: color || COLOR.ink }}>{value}</div>
-      <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: COLOR.inkSoft, marginTop: 2 }}>{label}</div>
+    <div style={{ background: "#fff", borderRadius: 12, border: `1px solid ${COLOR.line}`, padding: "16px 18px", flex: "1 1 150px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+        <div style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 700, color: color || COLOR.ink }}>{value}</div>
+        {Icon && <div style={{ color: color || COLOR.tealDeep, opacity: 0.8 }}><Icon size={18} /></div>}
+      </div>
+      <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 600, color: COLOR.ink }}>{label}</div>
+      {subtext && <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11, color: COLOR.inkSoft, marginTop: 2 }}>{subtext}</div>}
     </div>
   );
 }
 
-function ChartCard({ title, children }) {
+function ChartCard({ title, subtitle, children, actions }) {
   return (
     <div style={{ background: "#fff", borderRadius: 12, border: `1px solid ${COLOR.line}`, padding: 18, flex: "1 1 380px", minWidth: 0 }}>
-      <div style={{ fontFamily: "Fraunces, serif", fontSize: 15, fontWeight: 600, color: COLOR.tealDeep, marginBottom: 10 }}>{title}</div>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
+        <div>
+          <div style={{ fontFamily: "Fraunces, serif", fontSize: 15, fontWeight: 600, color: COLOR.tealDeep }}>{title}</div>
+          {subtitle && <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11.5, color: COLOR.inkSoft, marginTop: 1 }}>{subtitle}</div>}
+        </div>
+        {actions}
+      </div>
       {children}
     </div>
   );
 }
 
 function Analytics({ cases }) {
+  const [districtFilter, setDistrictFilter] = useState("ALL");
+  const [abuseFilter, setAbuseFilter] = useState("ALL");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+
+  // Gemini AI Strategic Briefing State
+  const [aiBriefing, setAiBriefing] = useState("");
+  const [briefingLoading, setBriefingLoading] = useState(false);
+  const [briefingError, setBriefingError] = useState("");
+
   if (cases.length === 0) {
     return (
       <div style={{ textAlign: "center", padding: "48px 20px", color: COLOR.inkSoft, fontFamily: "Inter, sans-serif",
@@ -613,39 +655,280 @@ function Analytics({ cases }) {
     );
   }
 
-  const byAbuse = countBy(cases, "abuseType");
-  const byDistrict = countBy(cases, "district").slice(0, 10);
-  const byStatus = countBy(cases, "status");
-  const byGender = countBy(cases, "victimGender");
-  const open = cases.filter((c) => c.status === "Open" || c.status === "In Progress").length;
-  const upcoming = cases.filter((c) => c.followUpDate && !["Not stated", "Not started", ""].includes(c.followUpDate.trim())).length;
+  // Filtered dataset
+  const filteredCases = cases.filter((c) => {
+    if (districtFilter !== "ALL" && c.district !== districtFilter) return false;
+    if (abuseFilter !== "ALL" && c.abuseType !== abuseFilter) return false;
+    if (statusFilter !== "ALL" && c.status !== statusFilter) return false;
+    return true;
+  });
+
+  // KPIs
+  const total = cases.length;
+  const openCount = cases.filter((c) => c.status === "Open" || c.status === "In Progress").length;
+  const resolvedCount = cases.filter((c) => c.status === "Closed" || c.status === "Referred").length;
+  const highConfidentialityCount = cases.filter((c) => (c.confidentialityLevel || "").toLowerCase() === "high").length;
+  const upcomingFollowups = cases.filter((c) => c.followUpDate && !["Not stated", "Not started", ""].includes(c.followUpDate.trim())).length;
+  const districtsCount = new Set(cases.map((c) => c.district).filter(Boolean)).size;
+
+  // Chart datasets from filtered
+  const byAbuse = countBy(filteredCases, "abuseType");
+  const byDistrict = countBy(filteredCases, "district").slice(0, 10);
+  const byStatus = countBy(filteredCases, "status");
+  const byGender = countBy(filteredCases, "victimGender");
+  const byPerpGender = countBy(filteredCases, "perpetratorGender");
+  
+  // Age groups
+  const ageMap = {};
+  filteredCases.forEach((c) => {
+    const grp = classifyAge(c.victimAge);
+    ageMap[grp] = (ageMap[grp] || 0) + 1;
+  });
+  const ageOrder = [
+    "0–5 yrs (Early Childhood)",
+    "6–11 yrs (Primary Age)",
+    "12–14 yrs (Adolescent)",
+    "15–17 yrs (Older Youth)",
+    "18+ yrs (Adult / Other)",
+    "Age unstated"
+  ];
+  const byAgeGroup = ageOrder
+    .map((name) => ({ name, value: ageMap[name] || 0 }))
+    .filter((e) => e.value > 0);
+
+  // Perpetrator relationships
+  const perpRelMap = {};
+  filteredCases.forEach((c) => {
+    const r = (c.relationshipToVictim || "Not specified").trim() || "Not specified";
+    perpRelMap[r] = (perpRelMap[r] || 0) + 1;
+  });
+  const byPerpRel = Object.entries(perpRelMap)
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 7);
+
+  // District table breakdown
+  const districtTableData = useMemo(() => {
+    const map = {};
+    cases.forEach((c) => {
+      const d = c.district || "Unassigned District";
+      if (!map[d]) {
+        map[d] = { district: d, total: 0, open: 0, resolved: 0, abuseCounts: {} };
+      }
+      map[d].total += 1;
+      if (c.status === "Open" || c.status === "In Progress") map[d].open += 1;
+      if (c.status === "Closed" || c.status === "Referred") map[d].resolved += 1;
+      const ab = c.abuseType || "Other";
+      map[d].abuseCounts[ab] = (map[d].abuseCounts[ab] || 0) + 1;
+    });
+    return Object.values(map)
+      .map((item) => {
+        let topAbuse = "N/A";
+        let maxAb = 0;
+        Object.entries(item.abuseCounts).forEach(([k, v]) => {
+          if (v > maxAb) {
+            maxAb = v;
+            topAbuse = `${k} (${v})`;
+          }
+        });
+        return {
+          ...item,
+          topAbuse,
+          resolutionRate: item.total ? Math.round((item.resolved / item.total) * 100) : 0,
+        };
+      })
+      .sort((a, b) => b.total - a.total);
+  }, [cases]);
+
+  // AI Briefing Generator
+  const generateAiBriefing = async () => {
+    setBriefingLoading(true);
+    setBriefingError("");
+    try {
+      const summaryStats = `Total Cases: ${cases.length}\n` +
+        `Open / In-Progress: ${openCount}\n` +
+        `Resolved / Referred: ${resolvedCount}\n` +
+        `Districts Represented: ${districtsCount}\n` +
+        `Top Districts: ${byDistrict.map((d) => `${d.name} (${d.value})`).join(", ")}\n` +
+        `Abuse Breakdown: ${byAbuse.map((a) => `${a.name} (${a.value})`).join(", ")}\n` +
+        `Victim Age Groups: ${byAgeGroup.map((a) => `${a.name}: ${a.value}`).join(", ")}\n` +
+        `Recent cases summary:\n` +
+        cases.slice(0, 15).map((c) => `- [${c.caseId}] ${c.district || "Unknown District"}: ${c.abuseType || "Abuse"} affecting ${c.victimGender || "child"} age ${c.victimAge || "N/A"}. Status: ${c.status}. Notes: ${c.description || "N/A"}`).join("\n");
+
+      const systemInstruction =
+        "You are the Chief Safeguarding Intelligence Officer for the National Children's Commission of Malawi. " +
+        "You deliver high-impact, professional analytical briefings summarizing child protection case registry data.";
+      const prompt =
+        `Provide a structured 4-paragraph Executive Intelligence Briefing for the Commissioners based on the current case register:\n\n` +
+        `1. Strategic Overview & Caseload Dynamics (Total volume, resolution progress, active case pressure)\n` +
+        `2. High-Risk Abuse Typologies & Vulnerable Demographics (Dominant violations, age groups most affected)\n` +
+        `3. Geographic Hotspots & Regional Patterns (Districts needing priority attention)\n` +
+        `4. Actionable Commission Recommendations (3 concrete child protection interventions)\n\n` +
+        `Data:\n${summaryStats}`;
+
+      const res = await callGemini(prompt, { systemInstruction });
+      setAiBriefing(res);
+    } catch (err) {
+      console.error("AI briefing error:", err);
+      setBriefingError("Could not generate AI briefing right now. Please verify your API connection.");
+    } finally {
+      setBriefingLoading(false);
+    }
+  };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
-        <StatCard label="Total cases" value={cases.length} />
-        <StatCard label="Open / in progress" value={open} color={COLOR.rose} />
-        <StatCard label="Districts represented" value={new Set(cases.map((c) => c.district).filter(Boolean)).size} color={COLOR.teal} />
-        <StatCard label="With a follow-up date set" value={upcoming} color={COLOR.amber} />
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {/* KPI Stats Header */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+        <StatCard label="Total cases" value={total} subtext="Registered in database" icon={ClipboardList} />
+        <StatCard label="Active caseload" value={openCount} color={COLOR.rose} subtext={`${Math.round((openCount / (total || 1)) * 100)}% pending or in progress`} icon={ShieldAlert} />
+        <StatCard label="Resolved / Referred" value={resolvedCount} color={COLOR.sage} subtext={`${Math.round((resolvedCount / (total || 1)) * 100)}% resolution rate`} icon={CheckCircle2} />
+        <StatCard label="High confidentiality" value={highConfidentialityCount} color={COLOR.amber} subtext="Restricted minor protection" icon={AlertTriangle} />
+        <StatCard label="Districts covered" value={districtsCount} color={COLOR.teal} subtext={`Across ${MALAWI_DISTRICTS.length} Malawi districts`} icon={Building} />
+        <StatCard label="Scheduled follow-ups" value={upcomingFollowups} color={COLOR.tealDeep} subtext="Pending field actions" icon={TrendingUp} />
       </div>
 
+      {/* Filter Controls & AI Intelligence Trigger Bar */}
+      <div style={{
+        background: "#fff", borderRadius: 12, border: `1px solid ${COLOR.line}`, padding: "14px 18px",
+        display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12
+      }}>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, color: COLOR.tealDeep, textTransform: "uppercase", letterSpacing: 0.5 }}>
+            <Filter size={14} /> Filters:
+          </div>
+
+          {/* District Filter */}
+          <select
+            value={districtFilter}
+            onChange={(e) => setDistrictFilter(e.target.value)}
+            style={{
+              padding: "6px 10px", borderRadius: 7, border: `1px solid ${COLOR.line}`,
+              fontFamily: "Inter, sans-serif", fontSize: 12.5, background: COLOR.paper
+            }}
+          >
+            <option value="ALL">All Districts ({cases.length})</option>
+            {MALAWI_DISTRICTS.map((d) => {
+              const count = cases.filter((c) => c.district === d).length;
+              return <option key={d} value={d}>{d} {count > 0 ? `(${count})` : ""}</option>;
+            })}
+          </select>
+
+          {/* Abuse Filter */}
+          <select
+            value={abuseFilter}
+            onChange={(e) => setAbuseFilter(e.target.value)}
+            style={{
+              padding: "6px 10px", borderRadius: 7, border: `1px solid ${COLOR.line}`,
+              fontFamily: "Inter, sans-serif", fontSize: 12.5, background: COLOR.paper
+            }}
+          >
+            <option value="ALL">All Abuse Types</option>
+            {ABUSE_TYPES.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+
+          {/* Status Filter */}
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            style={{
+              padding: "6px 10px", borderRadius: 7, border: `1px solid ${COLOR.line}`,
+              fontFamily: "Inter, sans-serif", fontSize: 12.5, background: COLOR.paper
+            }}
+          >
+            <option value="ALL">All Statuses</option>
+            {STATUS_OPTIONS.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+
+          {(districtFilter !== "ALL" || abuseFilter !== "ALL" || statusFilter !== "ALL") && (
+            <button
+              onClick={() => {
+                setDistrictFilter("ALL");
+                setAbuseFilter("ALL");
+                setStatusFilter("ALL");
+              }}
+              style={{
+                border: "none", background: "transparent", color: COLOR.rose,
+                fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 3
+              }}
+            >
+              <X size={13} /> Reset filters ({filteredCases.length} shown)
+            </button>
+          )}
+        </div>
+
+        <Btn
+          small
+          icon={Sparkles}
+          onClick={generateAiBriefing}
+          disabled={briefingLoading}
+          style={{ background: COLOR.tealDeep, color: "#fff" }}
+        >
+          {briefingLoading ? "Generating AI Briefing…" : "Generate Commission AI Briefing"}
+        </Btn>
+      </div>
+
+      {/* AI Intelligence Briefing Modal / Banner if generated */}
+      {aiBriefing && (
+        <div style={{
+          background: "#F0F7F6", borderRadius: 12, border: `1px solid ${COLOR.tealSoft}`,
+          borderLeft: `5px solid ${COLOR.teal}`, padding: "18px 22px"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ width: 26, height: 26, borderRadius: 6, background: COLOR.teal, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Sparkles size={14} color="#fff" />
+              </div>
+              <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 700, color: COLOR.tealDeep }}>
+                National Children's Commission — Safeguarding Intelligence Briefing
+              </div>
+            </div>
+            <button
+              onClick={() => setAiBriefing("")}
+              style={{ border: "none", background: "transparent", cursor: "pointer", color: COLOR.inkSoft }}
+            >
+              <X size={16} />
+            </button>
+          </div>
+          <div style={{
+            fontFamily: "Inter, sans-serif", fontSize: 13, lineHeight: 1.65, color: COLOR.ink,
+            whiteSpace: "pre-wrap", background: "#fff", padding: "14px 18px", borderRadius: 8, border: `1px solid ${COLOR.line}`
+          }}>
+            {aiBriefing}
+          </div>
+        </div>
+      )}
+
+      {briefingError && (
+        <div style={{ background: "#FDF2F2", color: COLOR.rose, padding: "10px 14px", borderRadius: 8, fontSize: 12.5 }}>
+          {briefingError}
+        </div>
+      )}
+
+      {/* Charts Grid */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
-        <ChartCard title="Cases by abuse classification">
-          <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={byAbuse} layout="vertical" margin={{ left: 8 }}>
+        {/* Abuse Classification */}
+        <ChartCard title="Cases by abuse classification" subtitle="Distribution of reported child protection violations">
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={byAbuse} layout="vertical" margin={{ left: 8, right: 20 }}>
               <CartesianGrid stroke={COLOR.line} horizontal={false} />
               <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
-              <YAxis type="category" dataKey="name" width={90} tick={{ fontSize: 11.5 }} />
+              <YAxis type="category" dataKey="name" width={95} tick={{ fontSize: 11.5 }} />
               <Tooltip />
-              <Bar dataKey="value" fill={COLOR.teal} radius={[0, 4, 4, 0]} />
+              <Bar dataKey="value" fill={COLOR.teal} radius={[0, 4, 4, 0]} name="Cases" />
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
 
-        <ChartCard title="Status breakdown">
-          <ResponsiveContainer width="100%" height={240}>
+        {/* Status Breakdown */}
+        <ChartCard title="Case status & resolution pipeline" subtitle="Active tracking versus closed/referred cases">
+          <ResponsiveContainer width="100%" height={250}>
             <PieChart>
-              <Pie data={byStatus} dataKey="value" nameKey="name" innerRadius={50} outerRadius={85} paddingAngle={2}>
+              <Pie data={byStatus} dataKey="value" nameKey="name" innerRadius={52} outerRadius={85} paddingAngle={3}>
                 {byStatus.map((e, i) => <Cell key={i} fill={STATUS_COLOR[e.name] || PIE_COLORS[i % PIE_COLORS.length]} />)}
               </Pie>
               <Legend iconSize={9} wrapperStyle={{ fontSize: 11.5 }} />
@@ -654,20 +937,48 @@ function Analytics({ cases }) {
           </ResponsiveContainer>
         </ChartCard>
 
-        <ChartCard title="Top districts by case count">
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={byDistrict} margin={{ left: -10 }}>
+        {/* Age Groups Breakdown */}
+        <ChartCard title="Victim age vulnerability brackets" subtitle="Cases categorized by child developmental stages">
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={byAgeGroup} margin={{ left: -10, bottom: 20 }}>
               <CartesianGrid stroke={COLOR.line} vertical={false} />
-              <XAxis dataKey="name" tick={{ fontSize: 10.5 }} interval={0} angle={-35} textAnchor="end" height={60} />
+              <XAxis dataKey="name" tick={{ fontSize: 10.5 }} interval={0} angle={-25} textAnchor="end" height={55} />
               <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
               <Tooltip />
-              <Bar dataKey="value" fill={COLOR.amber} radius={[4, 4, 0, 0]} />
+              <Bar dataKey="value" fill={COLOR.sage} radius={[4, 4, 0, 0]} name="Children" />
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
 
-        <ChartCard title="Victim gender">
-          <ResponsiveContainer width="100%" height={240}>
+        {/* Perpetrator Relationship */}
+        <ChartCard title="Perpetrator relationship profile" subtitle="Relationship of alleged perpetrator to victim">
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={byPerpRel} layout="vertical" margin={{ left: 10, right: 20 }}>
+              <CartesianGrid stroke={COLOR.line} horizontal={false} />
+              <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+              <YAxis type="category" dataKey="name" width={110} tick={{ fontSize: 11 }} />
+              <Tooltip />
+              <Bar dataKey="value" fill={COLOR.amber} radius={[0, 4, 4, 0]} name="Cases" />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        {/* Top Districts */}
+        <ChartCard title="Geographic hotspots (Top districts)" subtitle="Districts with highest reported case volume">
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={byDistrict} margin={{ left: -10, bottom: 25 }}>
+              <CartesianGrid stroke={COLOR.line} vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 10.5 }} interval={0} angle={-35} textAnchor="end" height={60} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+              <Tooltip />
+              <Bar dataKey="value" fill={COLOR.rose} radius={[4, 4, 0, 0]} name="Cases" />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        {/* Gender Distribution */}
+        <ChartCard title="Victim gender distribution" subtitle="Demographic composition of reported victims">
+          <ResponsiveContainer width="100%" height={260}>
             <PieChart>
               <Pie data={byGender} dataKey="value" nameKey="name" outerRadius={85} paddingAngle={2} label={{ fontSize: 11 }}>
                 {byGender.map((e, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
@@ -677,6 +988,81 @@ function Analytics({ cases }) {
             </PieChart>
           </ResponsiveContainer>
         </ChartCard>
+      </div>
+
+      {/* District Vulnerability & Safeguarding Registry Table */}
+      <div style={{ background: "#fff", borderRadius: 12, border: `1px solid ${COLOR.line}`, padding: "18px 20px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+          <div>
+            <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 700, color: COLOR.tealDeep }}>
+              District Safeguarding &amp; Caseload Breakdown
+            </div>
+            <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: COLOR.inkSoft }}>
+              District-by-district vulnerability indicators and resolution rates
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: COLOR.inkSoft, fontWeight: 600 }}>
+            {districtTableData.length} districts with active records
+          </div>
+        </div>
+
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "Inter, sans-serif", fontSize: 12.5 }}>
+            <thead>
+              <tr style={{ borderBottom: `2px solid ${COLOR.line}`, textAlign: "left", color: COLOR.inkSoft }}>
+                <th style={{ padding: "10px 12px" }}>District</th>
+                <th style={{ padding: "10px 12px" }}>Total Cases</th>
+                <th style={{ padding: "10px 12px" }}>Open / In Progress</th>
+                <th style={{ padding: "10px 12px" }}>Resolved / Referred</th>
+                <th style={{ padding: "10px 12px" }}>Primary Abuse Typology</th>
+                <th style={{ padding: "10px 12px" }}>Resolution Rate</th>
+                <th style={{ padding: "10px 12px", textAlign: "right" }}>Filter</th>
+              </tr>
+            </thead>
+            <tbody>
+              {districtTableData.map((row) => (
+                <tr key={row.district} style={{ borderBottom: `1px solid ${COLOR.line}` }}>
+                  <td style={{ padding: "10px 12px", fontWeight: 600, color: COLOR.ink }}>
+                    {row.district}
+                  </td>
+                  <td style={{ padding: "10px 12px", fontWeight: 700, color: COLOR.tealDeep }}>
+                    {row.total}
+                  </td>
+                  <td style={{ padding: "10px 12px", color: COLOR.rose, fontWeight: 600 }}>
+                    {row.open}
+                  </td>
+                  <td style={{ padding: "10px 12px", color: COLOR.sage, fontWeight: 600 }}>
+                    {row.resolved}
+                  </td>
+                  <td style={{ padding: "10px 12px", color: COLOR.inkSoft }}>
+                    {row.topAbuse}
+                  </td>
+                  <td style={{ padding: "10px 12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <div style={{ width: 60, height: 6, background: "#EAE7DF", borderRadius: 3, overflow: "hidden" }}>
+                        <div style={{ width: `${row.resolutionRate}%`, height: "100%", background: COLOR.sage }} />
+                      </div>
+                      <span style={{ fontSize: 11.5, fontWeight: 600 }}>{row.resolutionRate}%</span>
+                    </div>
+                  </td>
+                  <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                    <button
+                      onClick={() => setDistrictFilter(row.district)}
+                      style={{
+                        padding: "4px 8px", borderRadius: 6, border: `1px solid ${COLOR.line}`,
+                        background: districtFilter === row.district ? COLOR.tealSoft : "#fff",
+                        color: districtFilter === row.district ? COLOR.tealDeep : COLOR.inkSoft,
+                        fontSize: 11.5, fontWeight: 600, cursor: "pointer"
+                      }}
+                    >
+                      {districtFilter === row.district ? "Selected" : "Filter"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

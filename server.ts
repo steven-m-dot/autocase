@@ -62,10 +62,24 @@ async function startServer() {
           const parsed = JSON.parse(text);
           return res.json({ text, data: parsed });
         } catch {
-          // If JSON parse fails, attempt stripping code blocks
-          const cleaned = text.replace(/```json|```/g, "").trim();
-          const parsed = JSON.parse(cleaned);
-          return res.json({ text, data: parsed });
+          // If JSON parse fails, attempt stripping code blocks or finding JSON object boundaries
+          const cleaned = text
+            .replace(/^```(?:json)?\s*/i, "")
+            .replace(/\s*```$/i, "")
+            .trim();
+          try {
+            const parsed = JSON.parse(cleaned);
+            return res.json({ text, data: parsed });
+          } catch {
+            const start = text.indexOf("{");
+            const end = text.lastIndexOf("}");
+            if (start !== -1 && end !== -1 && end > start) {
+              const substring = text.substring(start, end + 1);
+              const parsed = JSON.parse(substring);
+              return res.json({ text, data: parsed });
+            }
+            throw new Error("Model response could not be parsed into JSON structure.");
+          }
         }
       }
 
