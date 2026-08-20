@@ -1,0 +1,25 @@
+[build]
+  publish = "dist"
+  command = "npm run build"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Proxy /api/gemini/generate to Netlify serverless function
+[[redirects]]
+  from = "/api/gemini/generate"
+  to = "/.netlify/functions/generate"
+  status = 200
+
+# Proxy /api/health to Netlify health function
+[[redirects]]
+  from = "/api/health"
+  to = "/.netlify/functions/health"
+  status = 200
+
+# SPA fallback routing
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

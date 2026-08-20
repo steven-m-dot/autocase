@@ -138,19 +138,48 @@ function generateCaseId(existing) {
 /*  reports stay grounded in what was actually typed, never fabricated)    */
 /* ---------------------------------------------------------------------- */
 async function callGemini(prompt, { json = false, systemInstruction } = {}) {
-  const res = await fetch("/api/gemini/generate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      prompt,
-      json,
-      systemInstruction,
-    }),
-  });
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.error || "AI request failed");
+  let res;
+  try {
+    res = await fetch("/api/gemini/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt,
+        json,
+        systemInstruction,
+      }),
+    });
+  } catch (networkError) {
+    throw new Error(
+      "Network connection error: Unable to reach the AI server endpoint. Please verify your connection."
+    );
   }
+
+  if (!res.ok) {
+    let errorDetail = "";
+    try {
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const errData = await res.json();
+        errorDetail = errData.error || errData.message || JSON.stringify(errData);
+      } else {
+        const text = await res.text();
+        if (res.status === 404) {
+          errorDetail = "API route not found (404). If deployed on Netlify, ensure Netlify Functions are deployed and GEMINI_API_KEY is configured in Netlify Site Configuration → Environment variables.";
+        } else {
+          errorDetail = text.slice(0, 150) || `HTTP Error ${res.status}`;
+        }
+      }
+    } catch {
+      errorDetail = `HTTP ${res.status} ${res.statusText}`;
+    }
+
+    if (errorDetail.includes("GEMINI_API_KEY")) {
+      throw new Error("GEMINI_API_KEY is not configured. On Netlify, add GEMINI_API_KEY in Site Settings → Environment variables, then trigger a redeploy.");
+    }
+    throw new Error(errorDetail || "AI request failed");
+  }
+
   const data = await res.json();
   if (json) {
     return data.data || (typeof data.text === "string" ? JSON.parse(data.text) : data.text);
