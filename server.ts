@@ -30,7 +30,7 @@ const CANDIDATE_MODELS = [
   "gemini-3.1-flash-lite",
 ];
 
-async function generateWithFallback(ai: GoogleGenAI, contents: string, config: Record<string, any>) {
+async function generateWithFallback(ai: GoogleGenAI, contents: any, config: Record<string, any>) {
   let lastError: any = null;
 
   for (const model of CANDIDATE_MODELS) {
@@ -78,15 +78,16 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json({ limit: "10mb" }));
+  app.use(express.json({ limit: "25mb" }));
+  app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 
-  // Gemini API route - keeping Gemini API key server-side with fallback & retries
+  // Gemini API route - supporting text and multimodal images with fallback & retries
   app.post("/api/gemini/generate", async (req, res) => {
     try {
-      const { prompt, json = false, systemInstruction } = req.body;
+      const { prompt, image, images, json = false, systemInstruction } = req.body;
 
-      if (!prompt) {
-        return res.status(400).json({ error: "Prompt is required" });
+      if (!prompt && !image && (!images || images.length === 0)) {
+        return res.status(400).json({ error: "Prompt or image is required" });
       }
 
       const ai = getGenAI();
@@ -100,7 +101,37 @@ async function startServer() {
         config.responseMimeType = "application/json";
       }
 
-      const { response, modelUsed } = await generateWithFallback(ai, prompt, config);
+      // Build multimodal contents payload if image(s) provided
+      let contentsPayload: any;
+      if (image && image.data) {
+        const base64Data = image.data.replace(/^data:[^;]+;base64,/, "");
+        const mimeType = image.mimeType || "image/jpeg";
+        contentsPayload = [
+          {
+            inlineData: {
+              data: base64Data,
+              mimeType: mimeType,
+            },
+          },
+          {
+            text: prompt || "Analyze this image and extract all explicit case details into the requested structure.",
+          },
+        ];
+      } else if (Array.isArray(images) && images.length > 0) {
+        contentsPayload = images.map((img: any) => ({
+          inlineData: {
+            data: (img.data || "").replace(/^data:[^;]+;base64,/, ""),
+            mimeType: img.mimeType || "image/jpeg",
+          },
+        }));
+        contentsPayload.push({
+          text: prompt || "Analyze these images and extract all explicit case details into the requested structure.",
+        });
+      } else {
+        contentsPayload = prompt;
+      }
+
+      const { response, modelUsed } = await generateWithFallback(ai, contentsPayload, config);
       const text = response.text || "";
 
       if (json) {

@@ -99,16 +99,16 @@ export async function handler(event) {
 
   try {
     const body = typeof event.body === "string" ? JSON.parse(event.body || "{}") : event.body || {};
-    const { prompt, json = false, systemInstruction } = body;
+    const { prompt, image, images, json = false, systemInstruction } = body;
 
-    if (!prompt) {
+    if (!prompt && !image && (!images || images.length === 0)) {
       return {
         statusCode: 400,
         headers: {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*",
         },
-        body: JSON.stringify({ error: "Prompt is required" }),
+        body: JSON.stringify({ error: "Prompt or image is required" }),
       };
     }
 
@@ -123,7 +123,37 @@ export async function handler(event) {
       config.responseMimeType = "application/json";
     }
 
-    const { response, modelUsed } = await generateWithFallback(ai, prompt, config);
+    // Build multimodal contents payload if image(s) provided
+    let contentsPayload;
+    if (image && image.data) {
+      const base64Data = image.data.replace(/^data:[^;]+;base64,/, "");
+      const mimeType = image.mimeType || "image/jpeg";
+      contentsPayload = [
+        {
+          inlineData: {
+            data: base64Data,
+            mimeType: mimeType,
+          },
+        },
+        {
+          text: prompt || "Analyze this image and extract all explicit case details into the requested structure.",
+        },
+      ];
+    } else if (Array.isArray(images) && images.length > 0) {
+      contentsPayload = images.map((img) => ({
+        inlineData: {
+          data: (img.data || "").replace(/^data:[^;]+;base64,/, ""),
+          mimeType: img.mimeType || "image/jpeg",
+        },
+      }));
+      contentsPayload.push({
+        text: prompt || "Analyze these images and extract all explicit case details into the requested structure.",
+      });
+    } else {
+      contentsPayload = prompt;
+    }
+
+    const { response, modelUsed } = await generateWithFallback(ai, contentsPayload, config);
     const text = response.text || "";
 
     if (json) {

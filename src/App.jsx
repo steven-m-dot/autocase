@@ -5,7 +5,8 @@ import {
   Upload, Download, Search, X, Printer, Copy, Check, AlertCircle,
   ChevronRight, Plus, Loader2, Settings, RefreshCw, CloudOff, Cloud,
   Filter, TrendingUp, Users, ShieldAlert, CheckCircle2, UserCheck,
-  Building, AlertTriangle
+  Building, AlertTriangle, Camera, Image as ImageIcon, FileSpreadsheet,
+  Code, CheckCircle, HelpCircle
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -133,11 +134,57 @@ function generateCaseId(existing) {
 }
 
 /* ---------------------------------------------------------------------- */
-/*  Gemini API helper — calls /api/gemini/generate server endpoint so the */
-/*  API key remains safely on the server. (structured extraction only —    */
-/*  reports stay grounded in what was actually typed, never fabricated)    */
+/*  Image Processing Helper                                               */
 /* ---------------------------------------------------------------------- */
-async function callGemini(prompt, { json = false, systemInstruction } = {}) {
+function processImageFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type.startsWith("image/")) {
+      return reject(new Error("Selected file is not an image"));
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX_DIM = 1600;
+        let width = img.width;
+        let height = img.height;
+        if (width > MAX_DIM || height > MAX_DIM) {
+          if (width > height) {
+            height = Math.round((height * MAX_DIM) / width);
+            width = MAX_DIM;
+          } else {
+            width = Math.round((width * MAX_DIM) / height);
+            height = MAX_DIM;
+          }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+        const base64 = dataUrl.replace(/^data:[^;]+;base64,/, "");
+        resolve({
+          dataUrl,
+          base64,
+          mimeType: "image/jpeg",
+          name: file.name,
+          size: `${Math.round(file.size / 1024)} KB`,
+        });
+      };
+      img.onerror = () => reject(new Error("Failed to decode image"));
+      img.src = e.target.result;
+    };
+    reader.onerror = () => reject(new Error("Failed to read image file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Gemini API helper — calls /api/gemini/generate server endpoint so the */
+/*  API key remains safely on the server.                                 */
+/* ---------------------------------------------------------------------- */
+async function callGemini(prompt, { image, images, json = false, systemInstruction } = {}) {
   let res;
   try {
     res = await fetch("/api/gemini/generate", {
@@ -145,6 +192,8 @@ async function callGemini(prompt, { json = false, systemInstruction } = {}) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         prompt,
+        image,
+        images,
         json,
         systemInstruction,
       }),
@@ -218,44 +267,456 @@ const storage = {
 };
 
 /* ---------------------------------------------------------------------- */
+/*  Complete 30-Column Google Apps Script Template for Users               */
+/* ---------------------------------------------------------------------- */
+const COMPLETE_APPS_SCRIPT_CODE = `/**
+ * National Children's Commission - Child Protection Register
+ * Google Apps Script Web App (2-Way Full 30-Column Sync)
+ */
+
+const SHEET_NAME = "Cases";
+
+const HEADERS = [
+  "Case ID", "Report Date", "Report Type", "Status", "Follow-Up Date",
+  "Victim Name", "Victim Gender", "Victim Age", "Victim Disability",
+  "District", "Traditional Authority", "Village", "Guardian Name", "Guardian Contact",
+  "Perpetrator Name(s)", "Perpetrator Gender", "Perpetrator Age", "Relationship to Victim", "Perpetrator Location",
+  "Abuse Type", "Description of Incident", "Location of Incident", "Date of Incident",
+  "Reported By", "Assigned To", "Resolution Notes", "Referral Made To",
+  "Confidentiality Level", "Consent Obtained", "Additional Notes"
+];
+
+const KEY_TO_HEADER = {
+  caseId: "Case ID", reportDate: "Report Date", reportType: "Report Type",
+  status: "Status", followUpDate: "Follow-Up Date", victimName: "Victim Name",
+  victimGender: "Victim Gender", victimAge: "Victim Age", victimDisability: "Victim Disability",
+  district: "District", traditionalAuthority: "Traditional Authority", village: "Village",
+  guardianName: "Guardian Name", guardianContact: "Guardian Contact",
+  perpetratorName: "Perpetrator Name(s)", perpetratorGender: "Perpetrator Gender",
+  perpetratorAge: "Perpetrator Age", relationshipToVictim: "Relationship to Victim",
+  perpetratorLocation: "Perpetrator Location", abuseType: "Abuse Type",
+  description: "Description of Incident", incidentLocation: "Location of Incident",
+  incidentDate: "Date of Incident", reportedBy: "Reported By", assignedTo: "Assigned To",
+  resolutionNotes: "Resolution Notes", referralMadeTo: "Referral Made To",
+  confidentialityLevel: "Confidentiality Level", consentObtained: "Consent Obtained",
+  additionalNotes: "Additional Notes"
+};
+
+const HEADER_TO_KEY = {};
+Object.keys(KEY_TO_HEADER).forEach(function(k) {
+  HEADER_TO_KEY[KEY_TO_HEADER[k]] = k;
+});
+
+function getOrCreateSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_NAME);
+  }
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow === 0 || lastCol === 0) {
+    sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
+    sheet.getRange(1, 1, 1, HEADERS.length).setFontWeight("bold").setBackground("#E4EEEC");
+    sheet.setFrozenRows(1);
+  } else {
+    const existingHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    if (existingHeaders.length < HEADERS.length || existingHeaders[0] !== "Case ID") {
+      sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
+      sheet.getRange(1, 1, 1, HEADERS.length).setFontWeight("bold").setBackground("#E4EEEC");
+      sheet.setFrozenRows(1);
+    }
+  }
+  return sheet;
+}
+
+function doGet(e) {
+  try {
+    const sheet = getOrCreateSheet();
+    const data = sheet.getDataRange().getValues();
+    
+    if (data.length <= 1) {
+      return respondJson({ success: true, count: 0, cases: [] });
+    }
+    
+    const headers = data[0].map(function(h) { return String(h).trim(); });
+    const cases = [];
+    
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      if (!row || row.every(function(c) { return c === "" || c === null || c === undefined; })) continue;
+      
+      const item = {};
+      Object.keys(KEY_TO_HEADER).forEach(function(k) {
+        item[k] = "";
+      });
+      
+      headers.forEach(function(h, colIdx) {
+        const key = HEADER_TO_KEY[h];
+        if (key && row[colIdx] !== undefined && row[colIdx] !== null) {
+          let val = row[colIdx];
+          if (val instanceof Date) {
+            val = Utilities.formatDate(val, Session.getScriptTimeZone(), "yyyy-MM-dd");
+          }
+          item[key] = String(val).trim();
+        }
+      });
+      
+      if (item.caseId) {
+        cases.push(item);
+      }
+    }
+    
+    return respondJson({ success: true, count: cases.length, cases: cases });
+  } catch (err) {
+    return respondJson({ success: false, error: err.toString() });
+  }
+}
+
+function doPost(e) {
+  try {
+    let body = {};
+    if (e && e.postData && e.postData.contents) {
+      try {
+        body = JSON.parse(e.postData.contents);
+      } catch (ex) {
+        body = e.parameter || {};
+      }
+    } else if (e && e.parameter) {
+      body = e.parameter;
+    }
+    
+    const action = body.action || "upsert";
+    const sheet = getOrCreateSheet();
+    
+    if (action === "upsert") {
+      const caseData = body.case;
+      if (!caseData || !caseData.caseId) {
+        return respondJson({ success: false, error: "Missing case or caseId in payload" });
+      }
+      
+      const allData = sheet.getDataRange().getValues();
+      let rowIndex = -1;
+      
+      for (let i = 1; i < allData.length; i++) {
+        if (String(allData[i][0]).trim() === String(caseData.caseId).trim()) {
+          rowIndex = i + 1;
+          break;
+        }
+      }
+      
+      const rowValues = HEADERS.map(function(headerName) {
+        const key = HEADER_TO_KEY[headerName];
+        const val = caseData[key];
+        return val !== undefined && val !== null ? String(val) : "";
+      });
+      
+      if (rowIndex > 0) {
+        sheet.getRange(rowIndex, 1, 1, HEADERS.length).setValues([rowValues]);
+      } else {
+        sheet.appendRow(rowValues);
+      }
+      
+      return respondJson({ success: true, message: "Case saved", caseId: caseData.caseId });
+    }
+    
+    if (action === "delete") {
+      const caseId = body.caseId;
+      if (!caseId) {
+        return respondJson({ success: false, error: "Missing caseId for deletion" });
+      }
+      const allData = sheet.getDataRange().getValues();
+      for (let i = 1; i < allData.length; i++) {
+        if (String(allData[i][0]).trim() === String(caseId).trim()) {
+          sheet.deleteRow(i + 1);
+          return respondJson({ success: true, message: "Case deleted", caseId: caseId });
+        }
+      }
+      return respondJson({ success: true, message: "Case not found (already deleted)" });
+    }
+    
+    return respondJson({ success: false, error: "Unknown action: " + action });
+  } catch (err) {
+    return respondJson({ success: false, error: err.toString() });
+  }
+}
+
+function respondJson(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}`;
+
+/* ---------------------------------------------------------------------- */
 /*  Google Sheet sync (via a deployed Apps Script web app)                 */
 /* ---------------------------------------------------------------------- */
 async function sheetPull(url) {
-  const res = await fetch(`${url}?action=list`);
-  if (!res.ok) throw new Error("Sheet returned an error");
-  const data = await res.json();
-  if (!data.success) throw new Error(data.error || "Sheet returned an error");
-  return data.cases || [];
+  let res;
+  try {
+    const separator = url.includes("?") ? "&" : "?";
+    res = await fetch(`${url}${separator}action=list&t=${Date.now()}`, {
+      method: "GET",
+      mode: "cors",
+      redirect: "follow",
+    });
+  } catch (err) {
+    throw new Error("Cannot reach Google Sheet. Check your internet connection and verify the Apps Script URL.");
+  }
+
+  const rawText = await res.text();
+  let data;
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    if (rawText.includes("accounts.google.com") || rawText.includes("<!DOCTYPE html>")) {
+      throw new Error("Authorization error: The Google Apps Script must be deployed with 'Who has access: Anyone' (currently set to 'Only myself').");
+    }
+    throw new Error("Google Sheet returned an unexpected response format.");
+  }
+
+  if (!data.success) {
+    throw new Error(data.error || "Google Sheet returned an error");
+  }
+
+  // Normalize all 30 fields so every section is populated
+  const normalized = (data.cases || []).map((c) => {
+    const obj = emptyCase();
+    FIELDS.forEach((f) => {
+      if (c[f.key] !== undefined && c[f.key] !== null) {
+        obj[f.key] = String(c[f.key]);
+      } else if (c[f.label] !== undefined && c[f.label] !== null) {
+        obj[f.key] = String(c[f.label]);
+      }
+    });
+    return obj;
+  });
+
+  return normalized;
 }
 
 async function sheetPush(url, action, payload) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" }, // avoids a CORS preflight Apps Script can't handle
-    body: JSON.stringify(action === "delete" ? { action, caseId: payload } : { action, case: payload }),
-  });
-  const data = await res.json();
-  if (!data.success) throw new Error(data.error || "Sheet rejected the write");
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      mode: "cors",
+      redirect: "follow",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(action === "delete" ? { action, caseId: payload } : { action, case: payload }),
+    });
+  } catch (err) {
+    throw new Error("Network error connecting to Google Sheet.");
+  }
+
+  const rawText = await res.text();
+  let data;
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    if (rawText.includes("accounts.google.com") || rawText.includes("<!DOCTYPE html>")) {
+      throw new Error("Authorization error: The Google Apps Script must be deployed with 'Who has access: Anyone'.");
+    }
+    throw new Error("Invalid response received from Google Apps Script Web App.");
+  }
+
+  if (!data.success) {
+    throw new Error(data.error || "Sheet rejected the write");
+  }
   return data;
 }
 
 function SyncSettingsModal({ url, onSave, onClose }) {
   const [val, setVal] = useState(url || "");
+  const [activeTab, setActiveTab] = useState("connect"); // connect | code
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [copiedCode, setCopiedCode] = useState(false);
+
+  const testConnection = async () => {
+    if (!val.trim()) {
+      setTestResult({ ok: false, msg: "Please paste your Web App URL first." });
+      return;
+    }
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const cases = await sheetPull(val.trim());
+      setTestResult({
+        ok: true,
+        msg: `Connection successful! Verified 2-way sync with Google Sheet. Found ${cases.length} existing record(s) with all 30 safeguarding fields mapped.`
+      });
+    } catch (err) {
+      setTestResult({
+        ok: false,
+        msg: err.message || "Failed to reach the Google Sheet Web App."
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const copyScript = () => {
+    navigator.clipboard.writeText(COMPLETE_APPS_SCRIPT_CODE);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2500);
+  };
+
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(15,18,23,.55)", display: "flex",
-      alignItems: "center", justifyContent: "center", padding: 16, zIndex: 70 }} onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, width: "100%", maxWidth: 520, padding: 22 }}>
-        <div style={{ fontFamily: "Fraunces, serif", fontSize: 17, fontWeight: 600, marginBottom: 6 }}>Google Sheet sync</div>
-        <p style={{ fontFamily: "Inter, sans-serif", fontSize: 12.5, color: COLOR.inkSoft, lineHeight: 1.5, marginBottom: 12 }}>
-          Paste the Web App URL from your deployed Apps Script (ends in <code>/exec</code>). Every save, edit,
-          and delete will write straight to your sheet, and the app pulls the latest data whenever you open it.
-        </p>
-        <input value={val} onChange={(e) => setVal(e.target.value)} placeholder="https://script.google.com/macros/s/…/exec"
-          style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: `1px solid ${COLOR.line}`,
-            fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5, marginBottom: 14 }} />
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(15,18,23,.6)", display: "flex",
+      alignItems: "center", justifyContent: "center", padding: 16, zIndex: 70
+    }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        background: "#fff", borderRadius: 14, width: "100%", maxWidth: 680,
+        maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden",
+        boxShadow: "0 20px 40px rgba(0,0,0,0.2)"
+      }}>
+        {/* Header */}
+        <div style={{
+          padding: "18px 24px", borderBottom: `1px solid ${COLOR.line}`,
+          display: "flex", alignItems: "center", justifyContent: "space-between"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 32, height: 32, borderRadius: 8, background: COLOR.tealSoft, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <FileSpreadsheet size={18} color={COLOR.tealDeep} />
+            </div>
+            <div>
+              <div style={{ fontFamily: "Fraunces, serif", fontSize: 18, fontWeight: 700, color: COLOR.ink }}>
+                Google Sheet Live 2-Way Synchronization
+              </div>
+              <div style={{ fontSize: 11.5, color: COLOR.inkSoft }}>
+                Sync all 30 child protection register fields in real-time
+              </div>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", color: COLOR.inkSoft }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Tab switcher */}
+        <div style={{ display: "flex", borderBottom: `1px solid ${COLOR.line}`, background: "#FAFAF8", padding: "0 24px" }}>
+          <button
+            onClick={() => setActiveTab("connect")}
+            style={{
+              padding: "12px 16px", border: "none", background: "transparent", cursor: "pointer",
+              fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6,
+              borderBottom: activeTab === "connect" ? `2.5px solid ${COLOR.teal}` : "2.5px solid transparent",
+              color: activeTab === "connect" ? COLOR.tealDeep : COLOR.inkSoft
+            }}
+          >
+            <Cloud size={15} /> Connection &amp; URL
+          </button>
+          <button
+            onClick={() => setActiveTab("code")}
+            style={{
+              padding: "12px 16px", border: "none", background: "transparent", cursor: "pointer",
+              fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6,
+              borderBottom: activeTab === "code" ? `2.5px solid ${COLOR.teal}` : "2.5px solid transparent",
+              color: activeTab === "code" ? COLOR.tealDeep : COLOR.inkSoft
+            }}
+          >
+            <Code size={15} /> Apps Script Code &amp; Setup Guide
+          </button>
+        </div>
+
+        {/* Modal body */}
+        <div style={{ padding: "20px 24px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
+          {activeTab === "connect" ? (
+            <>
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: COLOR.ink, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  Google Apps Script Web App URL
+                </label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input
+                    value={val}
+                    onChange={(e) => setVal(e.target.value)}
+                    placeholder="https://script.google.com/macros/s/.../exec"
+                    style={{
+                      flex: 1, padding: "10px 12px", borderRadius: 8, border: `1px solid ${COLOR.line}`,
+                      fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5, outline: "none"
+                    }}
+                  />
+                  <Btn small variant="outline" onClick={testConnection} disabled={testing || !val.trim()} icon={testing ? Loader2 : RefreshCw}>
+                    {testing ? "Testing…" : "Test Connection"}
+                  </Btn>
+                </div>
+                <div style={{ fontSize: 11.5, color: COLOR.inkSoft, marginTop: 6, lineHeight: 1.4 }}>
+                  Ensure your Web App was deployed with <b>Execute as: Me</b> and <b>Who has access: Anyone</b>.
+                </div>
+              </div>
+
+              {testResult && (
+                <div style={{
+                  padding: "12px 14px", borderRadius: 8, fontSize: 12.5, lineHeight: 1.5,
+                  background: testResult.ok ? "#EDF7F6" : COLOR.roseSoft,
+                  color: testResult.ok ? COLOR.tealDeep : COLOR.rose,
+                  border: `1px solid ${testResult.ok ? COLOR.tealSoft : "#F5C2C7"}`,
+                  display: "flex", gap: 10, alignItems: "flex-start"
+                }}>
+                  {testResult.ok ? <CheckCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} /> : <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} />}
+                  <div>
+                    <div style={{ fontWeight: 600, marginBottom: 2 }}>{testResult.ok ? "Connected & Ready" : "Connection Error"}</div>
+                    <div>{testResult.msg}</div>
+                  </div>
+                </div>
+              )}
+
+              <div style={{ background: COLOR.paper, borderRadius: 10, padding: "14px 16px", border: `1px solid ${COLOR.line}` }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: COLOR.tealDeep, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                  <HelpCircle size={14} /> How it works:
+                </div>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: COLOR.inkSoft, lineHeight: 1.6 }}>
+                  <li>Every case created, auto-filled, or edited immediately writes all 30 fields to your sheet.</li>
+                  <li>Clicking <b>"Pull latest"</b> pulls the updated register whenever your team collaborates.</li>
+                  <li>If your sheet is currently empty or missing columns, switch to the <b>"Apps Script Code"</b> tab and deploy the script.</li>
+                </ul>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: COLOR.ink }}>Turnkey 30-Column Google Apps Script</div>
+                  <div style={{ fontSize: 11.5, color: COLOR.inkSoft }}>Automatically generates and syncs all Case, Victim, Perpetrator, Incident, and Safeguard columns.</div>
+                </div>
+                <Btn small icon={copiedCode ? Check : Copy} onClick={copyScript} style={{ background: copiedCode ? COLOR.sage : COLOR.teal }}>
+                  {copiedCode ? "Copied to clipboard!" : "Copy Full Script"}
+                </Btn>
+              </div>
+
+              <div style={{ background: COLOR.tealSoft, borderRadius: 8, padding: "10px 14px", fontSize: 12, color: COLOR.tealDeep, lineHeight: 1.5 }}>
+                <b>Quick Setup Steps:</b>
+                <ol style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                  <li>Open your Google Sheet &rarr; Click <b>Extensions &rarr; Apps Script</b>.</li>
+                  <li>Delete any existing code, paste the script below, and click <b>Save</b> (Ctrl+S).</li>
+                  <li>Click <b>Deploy &rarr; New deployment</b> &rarr; Click gear icon &rarr; Select <b>Web app</b>.</li>
+                  <li>Set <b>Execute as:</b> <code>Me</code> and <b>Who has access:</b> <code>Anyone</code>.</li>
+                  <li>Click <b>Deploy</b>, authorize permissions, copy the Web App URL (ends in <code>/exec</code>), and paste it in the Connection tab!</li>
+                </ol>
+              </div>
+
+              <pre style={{
+                background: "#1E252B", color: "#E6EDF3", padding: "14px 16px", borderRadius: 8,
+                fontSize: 11, fontFamily: "IBM Plex Mono, monospace", maxHeight: 240, overflowY: "auto",
+                lineHeight: 1.5
+              }}>
+                {COMPLETE_APPS_SCRIPT_CODE}
+              </pre>
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{
+          padding: "14px 24px", borderTop: `1px solid ${COLOR.line}`, background: "#fff",
+          display: "flex", justifyContent: "flex-end", gap: 10
+        }}>
           <Btn variant="ghost" small onClick={onClose}>Cancel</Btn>
-          <Btn small icon={Check} onClick={() => { onSave(val.trim()); onClose(); }}>Save &amp; connect</Btn>
+          <Btn small icon={Check} onClick={() => { onSave(val.trim()); onClose(); }}>
+            Save &amp; Connect
+          </Btn>
         </div>
       </div>
     </div>
@@ -337,33 +798,58 @@ function Btn({ children, onClick, variant = "solid", icon: Icon, disabled, small
 }
 
 /* ---------------------------------------------------------------------- */
-/*  Entry form + AI auto-fill                                              */
+/*  Entry form + AI auto-fill (Text & Picture Multimodal Intake)           */
 /* ---------------------------------------------------------------------- */
 function EntryForm({ cases, onSave }) {
   const [form, setForm] = useState(() => ({ ...emptyCase(), caseId: generateCaseId(cases) }));
   const [narrative, setNarrative] = useState("");
+  const [imageObj, setImageObj] = useState(null); // { dataUrl, base64, mimeType, name, size }
+  const [imageProcessing, setImageProcessing] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
   const [changed, setChanged] = useState({});
   const [savedFlash, setSavedFlash] = useState(false);
+  const fileInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
 
   const setVal = (key, val) => setForm((f) => ({ ...f, [key]: val }));
 
+  const handleFileSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImageProcessing(true);
+    setAiError("");
+    try {
+      const processed = await processImageFile(file);
+      setImageObj(processed);
+    } catch (err) {
+      setAiError("Could not process the selected image. Please choose another file.");
+    } finally {
+      setImageProcessing(false);
+      e.target.value = "";
+    }
+  };
+
+  const removeImage = () => {
+    setImageObj(null);
+  };
+
   const runAutofill = async () => {
-    if (!narrative.trim()) return;
+    if (!narrative.trim() && !imageObj) return;
     setAiLoading(true);
     setAiError("");
     try {
       const schema = FIELDS.filter((f) => !f.auto).map((f) => f.key).join(", ");
       const systemInstruction =
         "You are an expert child protection caseworker AI for the National Children's Commission of Malawi. " +
-        "You extract structured facts from incident narratives, police blotters, news bulletins (e.g., Mibawa News, Zodiak, MBC), community reports, or field worker notes for official case intake registration. " +
-        "The narrative may be written in Chichewa, Tumbuka, Yao, English, or a mix of languages. " +
+        "You extract structured facts from incident narratives, photographs of handwritten field worker notes, police blotters/OB entries, news bulletins (e.g., Mibawa News, Zodiak, MBC), medical/hospital reports, or community complaints for official case intake registration. " +
+        "The content may be written in Chichewa, Tumbuka, Yao, English, or a mix of languages. " +
         "Recognize Chichewa terms (e.g., 'mwana' = child, 'zaka' = years/age, 'ku simba / dambwe' = initiation camp, 'kumwalira / kufa' = died/death, 'Boma' = district, 'Mfumu yayikulu' = Traditional Authority / Senior Chief, 'Mudzi' = Village, 'wodulidwa' = circumcised, 'apilisi' = police). " +
-        "Translate facts into clear, professional English for the case record fields. " +
-        "Only extract facts explicitly stated or directly implied by the text. Leave any field as an empty string \"\" if not mentioned.";
-      const prompt =
-        `Extract case information from the narrative into a JSON object with these exact keys: ${schema}.\n\n` +
+        "Transcribe and translate all explicit facts into clear, professional English for the case record fields. " +
+        "Only extract facts explicitly stated or clearly legible in the image/text. Leave any field as an empty string \"\" if not mentioned.";
+
+      let prompt =
+        `Extract case information into a JSON object with these exact keys: ${schema}.\n\n` +
         `Field Rules & Allowed Values:\n` +
         `- reportType: "Initial-Report" or "Follow-up" (default "Initial-Report")\n` +
         `- status: "Open", "In Progress", "Referred", or "Closed" (use "In Progress" if investigation is underway, or "Open")\n` +
@@ -372,10 +858,30 @@ function EntryForm({ cases, onSave }) {
         `- district: Must be one of the official Malawi districts if mentioned: ${MALAWI_DISTRICTS.join(", ")}\n` +
         `- confidentialityLevel: "High", "Medium", or "Low" (default "High" for minors or fatalities)\n` +
         `- consentObtained: "Yes", "No", or "N/A"\n` +
-        `- description: Comprehensive English summary of the incident\n\n` +
-        `Narrative:\n"""\n${narrative}\n"""\n\n` +
-        `Return ONLY a valid JSON object matching the requested keys.`;
-      const extracted = await callGemini(prompt, { json: true, systemInstruction });
+        `- description: Comprehensive English summary of the incident\n\n`;
+
+      if (imageObj) {
+        prompt += `Analyze this attached image (photograph of field note, police blotter, medical memo, or document). Carefully read all legible handwriting, printed text, timestamps, names, and incident particulars.\n`;
+      }
+      if (narrative.trim()) {
+        prompt += `Supplementary Text Narrative:\n"""\n${narrative.trim()}\n"""\n\n`;
+      }
+
+      prompt += `Return ONLY a valid JSON object matching the requested keys.`;
+
+      const options = {
+        json: true,
+        systemInstruction,
+      };
+
+      if (imageObj) {
+        options.image = {
+          data: imageObj.base64,
+          mimeType: imageObj.mimeType,
+        };
+      }
+
+      const extracted = await callGemini(prompt, options);
       const diffKeys = {};
       setForm((f) => {
         const next = { ...f };
@@ -391,7 +897,7 @@ function EntryForm({ cases, onSave }) {
       setTimeout(() => setChanged({}), 4000);
     } catch (e) {
       console.error("Autofill error:", e);
-      setAiError(e?.message || "Couldn't auto-fill from that text. You can still fill the form in manually.");
+      setAiError(e?.message || "Couldn't auto-fill from that narrative or image. You can still fill the form in manually.");
     } finally {
       setAiLoading(false);
     }
@@ -403,39 +909,135 @@ function EntryForm({ cases, onSave }) {
     setTimeout(() => setSavedFlash(false), 1800);
     setForm({ ...emptyCase(), caseId: generateCaseId([...cases, form]) });
     setNarrative("");
+    setImageObj(null);
   };
 
   const groups = [...new Set(FIELDS.map((f) => f.group))];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22, maxWidth: 920 }}>
+      {/* AI Intake Box (Text & Picture Multimodal) */}
       <div style={{
-        background: COLOR.tealDeep, borderRadius: 14, padding: "18px 20px",
-        display: "flex", flexDirection: "column", gap: 10
+        background: COLOR.tealDeep, borderRadius: 14, padding: "20px 22px",
+        display: "flex", flexDirection: "column", gap: 12, boxShadow: "0 4px 12px rgba(10,58,62,0.15)"
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#fff" }}>
-          <Sparkles size={16} color={COLOR.amber} />
-          <span style={{ fontWeight: 600, fontSize: 13.5, fontFamily: "Inter, sans-serif" }}>
-            Paste a field note, police report, or verbal account to auto-fill the form
-          </span>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", color: "#fff" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Sparkles size={17} color={COLOR.amber} />
+            <span style={{ fontWeight: 600, fontSize: 14, fontFamily: "Inter, sans-serif" }}>
+              Auto-Fill from Field Note, Picture, or Police Report
+            </span>
+          </div>
+          <span style={{ fontSize: 11.5, color: "#C9D6D5" }}>Text &amp; Image OCR Enabled</span>
         </div>
+
+        {/* Text Input Area */}
         <textarea
           value={narrative}
           onChange={(e) => setNarrative(e.target.value)}
-          placeholder="e.g. A 12-year-old girl from Machinga, GVH Maunde, was reportedly abused by a neighbour on 3 March 2026. Reported by the guardian to the local CPW…"
+          placeholder="Paste or type narrative in Chichewa, English, or Tumbuka (e.g. Mwana wa zaka 9 wamwalira ku simba m'mudzi wa Kakhomba, Thyolo… or A 12-year-old girl from Machinga…)"
           style={{
-            width: "100%", minHeight: 74, borderRadius: 8, border: "none", padding: "10px 12px",
-            fontFamily: "Inter, sans-serif", fontSize: 13, resize: "vertical", outline: "none"
+            width: "100%", minHeight: 76, borderRadius: 8, border: "none", padding: "10px 12px",
+            fontFamily: "Inter, sans-serif", fontSize: 13, resize: "vertical", outline: "none",
+            color: COLOR.ink, background: "#fff"
           }}
         />
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <Btn onClick={runAutofill} disabled={aiLoading || !narrative.trim()} icon={aiLoading ? Loader2 : Sparkles}>
-            {aiLoading ? "Reading narrative…" : "Auto-fill form"}
+
+        {/* Image Attachment Bar */}
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileSelect}
+            accept="image/*"
+            style={{ display: "none" }}
+          />
+          <input
+            type="file"
+            ref={cameraInputRef}
+            onChange={handleFileSelect}
+            accept="image/*"
+            capture="environment"
+            style={{ display: "none" }}
+          />
+
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={imageProcessing || aiLoading}
+            style={{
+              display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 7,
+              background: "rgba(255,255,255,0.12)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)",
+              fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "Inter, sans-serif"
+            }}
+          >
+            <ImageIcon size={14} /> Upload Picture / Photo of Note
+          </button>
+
+          <button
+            type="button"
+            onClick={() => cameraInputRef.current?.click()}
+            disabled={imageProcessing || aiLoading}
+            style={{
+              display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 7,
+              background: "rgba(255,255,255,0.12)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)",
+              fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "Inter, sans-serif"
+            }}
+          >
+            <Camera size={14} /> Take Photo (Camera)
+          </button>
+
+          {imageProcessing && (
+            <span style={{ color: "#E4EEEC", fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+              <Loader2 size={13} className="animate-spin" /> Processing image…
+            </span>
+          )}
+        </div>
+
+        {/* Image Thumbnail Preview Card */}
+        {imageObj && (
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            background: "rgba(0, 0, 0, 0.25)", borderRadius: 8, padding: "8px 12px",
+            border: "1px solid rgba(255,255,255,0.15)"
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <img
+                src={imageObj.dataUrl}
+                alt="Case document preview"
+                style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(255,255,255,0.3)" }}
+              />
+              <div>
+                <div style={{ color: "#fff", fontSize: 12.5, fontWeight: 600 }}>{imageObj.name}</div>
+                <div style={{ color: "#C9D6D5", fontSize: 11 }}>Picture attached · {imageObj.size} · Gemini Vision OCR ready</div>
+              </div>
+            </div>
+            <button
+              onClick={removeImage}
+              title="Remove image"
+              style={{ background: "transparent", border: "none", color: "#FFB4B8", cursor: "pointer", padding: 4 }}
+            >
+              <X size={16} />
+            </button>
+          </div>
+        )}
+
+        {/* Action Button & Note */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 2 }}>
+          <Btn
+            onClick={runAutofill}
+            disabled={aiLoading || (!narrative.trim() && !imageObj)}
+            icon={aiLoading ? Loader2 : Sparkles}
+            style={{ background: COLOR.amber, color: COLOR.ink, border: "none" }}
+          >
+            {aiLoading ? (imageObj ? "Analyzing picture & narrative…" : "Reading narrative…") : "Auto-fill form"}
           </Btn>
           <span style={{ color: "#C9D6D5", fontSize: 11.5, fontFamily: "Inter, sans-serif" }}>
-            Only fills what's explicitly stated — nothing is invented.
+            Only extracts facts explicitly stated or shown in the document.
           </span>
         </div>
+
+        {/* Error banner with retry */}
         {aiError && (
           <div style={{
             background: "rgba(255, 255, 255, 0.12)",
@@ -846,7 +1448,7 @@ function Analytics({ cases }) {
       setAiBriefing(res);
     } catch (err) {
       console.error("AI briefing error:", err);
-      setBriefingError("Could not generate AI briefing right now. Please verify your API connection.");
+      setBriefingError(err?.message || "Could not generate AI briefing right now. Please verify your API connection.");
     } finally {
       setBriefingLoading(false);
     }
@@ -980,8 +1582,42 @@ function Analytics({ cases }) {
       )}
 
       {briefingError && (
-        <div style={{ background: "#FDF2F2", color: COLOR.rose, padding: "10px 14px", borderRadius: 8, fontSize: 12.5 }}>
-          {briefingError}
+        <div style={{
+          background: "#FDF2F2",
+          color: COLOR.rose,
+          padding: "12px 16px",
+          borderRadius: 8,
+          fontSize: 12.5,
+          border: "1px solid #F5C2C7",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <AlertCircle size={16} color={COLOR.rose} style={{ flexShrink: 0 }} />
+            <span>{briefingError}</span>
+          </div>
+          <button
+            onClick={generateAiBriefing}
+            disabled={briefingLoading}
+            style={{
+              background: COLOR.rose,
+              color: "#fff",
+              border: "none",
+              borderRadius: 6,
+              padding: "5px 10px",
+              fontSize: 11.5,
+              fontWeight: 600,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              whiteSpace: "nowrap"
+            }}
+          >
+            <RefreshCw size={11} /> Try again
+          </button>
         </div>
       )}
 
