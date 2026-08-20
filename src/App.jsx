@@ -174,8 +174,22 @@ async function callGemini(prompt, { json = false, systemInstruction } = {}) {
       errorDetail = `HTTP ${res.status} ${res.statusText}`;
     }
 
+    if (typeof errorDetail === "string" && errorDetail.trim().startsWith("{")) {
+      try {
+        const parsed = JSON.parse(errorDetail);
+        if (parsed?.error?.message) {
+          errorDetail = parsed.error.message;
+        }
+      } catch {
+        // ignore parse error
+      }
+    }
+
     if (errorDetail.includes("GEMINI_API_KEY")) {
       throw new Error("GEMINI_API_KEY is not configured. On Netlify, add GEMINI_API_KEY in Site Settings → Environment variables, then trigger a redeploy.");
+    }
+    if (errorDetail.includes("503") || errorDetail.includes("high demand") || errorDetail.includes("UNAVAILABLE") || errorDetail.includes("RESOURCE_EXHAUSTED")) {
+      throw new Error("Gemini is currently experiencing temporary high traffic. Automatic fallback has been configured — please click 'Try again'.");
     }
     throw new Error(errorDetail || "AI request failed");
   }
@@ -423,8 +437,41 @@ function EntryForm({ cases, onSave }) {
           </span>
         </div>
         {aiError && (
-          <div style={{ color: COLOR.amberSoft, fontSize: 12, display: "flex", gap: 6, alignItems: "center" }}>
-            <AlertCircle size={13} /> {aiError}
+          <div style={{
+            background: "rgba(255, 255, 255, 0.12)",
+            borderRadius: 8,
+            padding: "8px 12px",
+            color: "#FFF2DE",
+            fontSize: 12,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 10
+          }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <AlertCircle size={14} color={COLOR.amber} style={{ flexShrink: 0 }} />
+              <span>{aiError}</span>
+            </div>
+            <button
+              onClick={runAutofill}
+              disabled={aiLoading}
+              style={{
+                background: COLOR.amber,
+                color: COLOR.ink,
+                border: "none",
+                borderRadius: 6,
+                padding: "4px 9px",
+                fontSize: 11.5,
+                fontWeight: 700,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                display: "flex",
+                alignItems: "center",
+                gap: 4
+              }}
+            >
+              <RefreshCw size={11} /> Try again
+            </button>
           </div>
         )}
       </div>

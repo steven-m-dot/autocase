@@ -6,7 +6,9 @@ function getGenAI() {
   if (!genAIClient) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      throw new Error("GEMINI_API_KEY is not configured on Netlify. Please set GEMINI_API_KEY in your Netlify site settings (Site configuration -> Environment variables) and trigger a redeploy.");
+      throw new Error(
+        "GEMINI_API_KEY is not configured on Netlify. Please set GEMINI_API_KEY in your Netlify site settings (Site configuration -> Environment variables) and trigger a redeploy."
+      );
     }
     genAIClient = new GoogleGenAI({
       apiKey,
@@ -18,6 +20,57 @@ function getGenAI() {
     });
   }
   return genAIClient;
+}
+
+const CANDIDATE_MODELS = [
+  "gemini-3.7-flash",
+  "gemini-2.5-flash",
+  "gemini-flash-latest",
+  "gemini-3.1-flash-lite",
+];
+
+async function generateWithFallback(ai, contents, config) {
+  let lastError = null;
+
+  for (const model of CANDIDATE_MODELS) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents,
+          config: Object.keys(config).length > 0 ? config : undefined,
+        });
+        if (response && (response.text !== undefined || response.candidates)) {
+          return { response, modelUsed: model };
+        }
+      } catch (err) {
+        lastError = err;
+        const errMsg = String(err?.message || err);
+        console.warn(`Attempt with ${model} (attempt ${attempt}) failed: ${errMsg}`);
+
+        const isTransient =
+          errMsg.includes("503") ||
+          errMsg.includes("UNAVAILABLE") ||
+          errMsg.includes("high demand") ||
+          errMsg.includes("429") ||
+          errMsg.includes("RESOURCE_EXHAUSTED") ||
+          errMsg.includes("overloaded");
+
+        if (isTransient && attempt < 2) {
+          await new Promise((res) => setTimeout(res, 800 * attempt));
+          continue;
+        }
+        break; // try next candidate model
+      }
+    }
+  }
+
+  throw (
+    lastError ||
+    new Error(
+      "Gemini service is experiencing high demand. Please try again in a few moments."
+    )
+  );
 }
 
 export async function handler(event) {
@@ -70,12 +123,7 @@ export async function handler(event) {
       config.responseMimeType = "application/json";
     }
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
-      contents: prompt,
-      config: Object.keys(config).length > 0 ? config : undefined,
-    });
-
+    const { response, modelUsed } = await generateWithFallback(ai, prompt, config);
     const text = response.text || "";
 
     if (json) {
@@ -105,7 +153,7 @@ export async function handler(event) {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*",
         },
-        body: JSON.stringify({ text, data }),
+        body: JSON.stringify({ text, data, modelUsed }),
       };
     }
 
@@ -115,10 +163,22 @@ export async function handler(event) {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
       },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, modelUsed }),
     };
   } catch (err) {
     console.error("Netlify Gemini function error:", err);
+    let message = err?.message || "An error occurred while communicating with Gemini API on Netlify";
+    try {
+      if (typeof message === "string" && message.trim().startsWith("{")) {
+        const parsedErr = JSON.parse(message);
+        if (parsedErr?.error?.message) {
+          message = parsedErr.error.message;
+        }
+      }
+    } catch {
+      // keep original message
+    }
+
     return {
       statusCode: 500,
       headers: {
@@ -126,7 +186,7 @@ export async function handler(event) {
         "Access-Control-Allow-Origin": "*",
       },
       body: JSON.stringify({
-        error: err?.message || "An error occurred while communicating with Gemini API on Netlify",
+        error: message,
       }),
     };
   }

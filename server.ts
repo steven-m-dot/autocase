@@ -23,13 +23,64 @@ function getGenAI(): GoogleGenAI {
   return genAIClient;
 }
 
+const CANDIDATE_MODELS = [
+  "gemini-3.7-flash",
+  "gemini-2.5-flash",
+  "gemini-flash-latest",
+  "gemini-3.1-flash-lite",
+];
+
+async function generateWithFallback(ai: GoogleGenAI, contents: string, config: Record<string, any>) {
+  let lastError: any = null;
+
+  for (const model of CANDIDATE_MODELS) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents,
+          config: Object.keys(config).length > 0 ? config : undefined,
+        });
+        if (response && (response.text !== undefined || response.candidates)) {
+          return { response, modelUsed: model };
+        }
+      } catch (err: any) {
+        lastError = err;
+        const errMsg = String(err?.message || err);
+        console.warn(`Attempt with ${model} (attempt ${attempt}) failed: ${errMsg}`);
+
+        const isTransient =
+          errMsg.includes("503") ||
+          errMsg.includes("UNAVAILABLE") ||
+          errMsg.includes("high demand") ||
+          errMsg.includes("429") ||
+          errMsg.includes("RESOURCE_EXHAUSTED") ||
+          errMsg.includes("overloaded");
+
+        if (isTransient && attempt < 2) {
+          await new Promise((res) => setTimeout(res, 800 * attempt));
+          continue;
+        }
+        break; // try next candidate model
+      }
+    }
+  }
+
+  throw (
+    lastError ||
+    new Error(
+      "Gemini service is experiencing high demand. Please try again in a few moments."
+    )
+  );
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   app.use(express.json({ limit: "10mb" }));
 
-  // Gemini API route - keeping Gemini API key server-side
+  // Gemini API route - keeping Gemini API key server-side with fallback & retries
   app.post("/api/gemini/generate", async (req, res) => {
     try {
       const { prompt, json = false, systemInstruction } = req.body;
@@ -49,18 +100,13 @@ async function startServer() {
         config.responseMimeType = "application/json";
       }
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3.7-flash",
-        contents: prompt,
-        config: Object.keys(config).length > 0 ? config : undefined,
-      });
-
+      const { response, modelUsed } = await generateWithFallback(ai, prompt, config);
       const text = response.text || "";
 
       if (json) {
+        let data: any;
         try {
-          const parsed = JSON.parse(text);
-          return res.json({ text, data: parsed });
+          data = JSON.parse(text);
         } catch {
           // If JSON parse fails, attempt stripping code blocks or finding JSON object boundaries
           const cleaned = text
@@ -68,26 +114,38 @@ async function startServer() {
             .replace(/\s*```$/i, "")
             .trim();
           try {
-            const parsed = JSON.parse(cleaned);
-            return res.json({ text, data: parsed });
+            data = JSON.parse(cleaned);
           } catch {
             const start = text.indexOf("{");
             const end = text.lastIndexOf("}");
             if (start !== -1 && end !== -1 && end > start) {
               const substring = text.substring(start, end + 1);
-              const parsed = JSON.parse(substring);
-              return res.json({ text, data: parsed });
+              data = JSON.parse(substring);
+            } else {
+              throw new Error("Model response could not be parsed into JSON structure.");
             }
-            throw new Error("Model response could not be parsed into JSON structure.");
           }
         }
+        return res.json({ text, data, modelUsed });
       }
 
-      return res.json({ text });
+      return res.json({ text, modelUsed });
     } catch (err: any) {
       console.error("Gemini API error:", err);
+      let message = err?.message || "An error occurred while communicating with Gemini API";
+      try {
+        if (typeof message === "string" && message.trim().startsWith("{")) {
+          const parsedErr = JSON.parse(message);
+          if (parsedErr?.error?.message) {
+            message = parsedErr.error.message;
+          }
+        }
+      } catch {
+        // keep original message
+      }
+
       return res.status(500).json({
-        error: err?.message || "An error occurred while communicating with Gemini API",
+        error: message,
       });
     }
   });
