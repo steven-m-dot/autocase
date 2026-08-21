@@ -6,12 +6,31 @@ import {
   ChevronRight, Plus, Loader2, Settings, RefreshCw, CloudOff, Cloud,
   Filter, TrendingUp, Users, ShieldAlert, CheckCircle2, UserCheck,
   Building, AlertTriangle, Camera, Image as ImageIcon, FileSpreadsheet,
-  Code, CheckCircle, HelpCircle
+  Code, CheckCircle, HelpCircle, ExternalLink, LogIn, LogOut, Lock,
+  Share2, ArrowDownToLine, ArrowUpFromLine
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
 } from "recharts";
+import {
+  auth,
+  SCOPES,
+  DEFAULT_SPREADSHEET_ID,
+  DEFAULT_SPREADSHEET_URL,
+  SHEET_HEADERS,
+  initAuth,
+  googleSignIn,
+  logout,
+  getAccessToken,
+  extractSpreadsheetId,
+  getSpreadsheetDetails,
+  ensureSheetHeaders,
+  pullCasesFromGoogleSheet,
+  pushCaseToGoogleSheet,
+  deleteCaseFromGoogleSheet,
+  syncAllCasesToGoogleSheet,
+} from "./googleSheets";
 
 /* ---------------------------------------------------------------------- */
 /*  Design tokens                                                          */
@@ -525,34 +544,138 @@ async function sheetPush(url, action, payload) {
   return data;
 }
 
-function SyncSettingsModal({ url, onSave, onClose }) {
-  const [val, setVal] = useState(url || "");
-  const [activeTab, setActiveTab] = useState("connect"); // connect | code
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState(null);
-  const [copiedCode, setCopiedCode] = useState(false);
+function GoogleSignInButton({ onClick, loading, label = "Sign in with Google" }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={loading}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 10,
+        background: "#FFFFFF",
+        color: "#3c4043",
+        border: `1px solid ${COLOR.line}`,
+        borderRadius: 8,
+        padding: "8px 16px",
+        fontFamily: "'Google Sans', Roboto, Inter, sans-serif",
+        fontSize: 13,
+        fontWeight: 500,
+        cursor: loading ? "wait" : "pointer",
+        boxShadow: "0 1px 2px rgba(60,64,67,0.08)",
+        transition: "background 0.15s, box-shadow 0.15s",
+      }}
+      onMouseOver={(e) => (e.currentTarget.style.boxShadow = "0 1px 3px 1px rgba(60,64,67,0.15)")}
+      onMouseOut={(e) => (e.currentTarget.style.boxShadow = "0 1px 2px rgba(60,64,67,0.08)")}
+    >
+      {loading ? (
+        <Loader2 size={16} className="animate-spin" color={COLOR.tealDeep} />
+      ) : (
+        <svg width="18" height="18" viewBox="0 0 48 48" style={{ display: "block" }}>
+          <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+          <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+          <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+          <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+          <path fill="none" d="M0 0h48v48H0z" />
+        </svg>
+      )}
+      <span>{loading ? "Authenticating…" : label}</span>
+    </button>
+  );
+}
 
-  const testConnection = async () => {
-    if (!val.trim()) {
-      setTestResult({ ok: false, msg: "Please paste your Web App URL first." });
-      return;
-    }
-    setTesting(true);
-    setTestResult(null);
+function SyncSettingsModal({
+  spreadsheetId,
+  sheetTab,
+  onUpdateSheetConfig,
+  googleUser,
+  onGoogleLogin,
+  onGoogleLogout,
+  webhookUrl,
+  onSaveWebhookUrl,
+  onPullDirect,
+  onPushAllDirect,
+  onClose,
+  isBusy,
+  statusMessage,
+}) {
+  const [activeTab, setActiveTab] = useState("direct"); // direct | webhook | code
+  const [targetIdInput, setTargetIdInput] = useState(spreadsheetId || DEFAULT_SPREADSHEET_ID);
+  const [selectedTab, setSelectedTab] = useState(sheetTab || "Sheet1");
+  const [availableTabs, setAvailableTabs] = useState([]);
+  const [sheetMeta, setSheetMeta] = useState(null);
+  const [loadingMeta, setLoadingMeta] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [localWebhook, setLocalWebhook] = useState(webhookUrl || "");
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [actionSuccess, setActionSuccess] = useState("");
+  const [confirmBatchPush, setConfirmBatchPush] = useState(false);
+
+  const cleanId = extractSpreadsheetId(targetIdInput);
+  const sheetUrl = `https://docs.google.com/spreadsheets/d/${cleanId}/edit`;
+
+  // Fetch sheet details when user is signed in or target changes
+  const fetchMetadata = async () => {
+    if (!googleUser) return;
+    setLoadingMeta(true);
+    setAuthError("");
     try {
-      const cases = await sheetPull(val.trim());
-      setTestResult({
-        ok: true,
-        msg: `Connection successful! Verified 2-way sync with Google Sheet. Found ${cases.length} existing record(s) with all 30 safeguarding fields mapped.`
-      });
+      const meta = await getSpreadsheetDetails(cleanId);
+      setSheetMeta(meta);
+      const tabNames = meta.sheets.map((s) => s.title);
+      setAvailableTabs(tabNames);
+      if (!tabNames.includes(selectedTab) && tabNames.length > 0) {
+        setSelectedTab(tabNames[0]);
+      }
     } catch (err) {
-      setTestResult({
-        ok: false,
-        msg: err.message || "Failed to reach the Google Sheet Web App."
-      });
+      setAuthError(err.message || "Failed to access spreadsheet.");
     } finally {
-      setTesting(false);
+      setLoadingMeta(false);
     }
+  };
+
+  useEffect(() => {
+    if (googleUser && cleanId) {
+      fetchMetadata();
+    }
+  }, [googleUser, cleanId]);
+
+  const handleLoginClick = async () => {
+    setAuthError("");
+    try {
+      await onGoogleLogin();
+    } catch (err) {
+      setAuthError(err.message || "Google Sign-In failed.");
+    }
+  };
+
+  const handlePullClick = async () => {
+    setActionSuccess("");
+    setAuthError("");
+    try {
+      const count = await onPullDirect(cleanId, selectedTab);
+      setActionSuccess(`Successfully pulled ${count} record(s) from Google Sheet.`);
+    } catch (err) {
+      setAuthError(err.message || "Failed to pull from Google Sheet.");
+    }
+  };
+
+  const handlePushAllClick = async () => {
+    setActionSuccess("");
+    setAuthError("");
+    try {
+      await onPushAllDirect(cleanId, selectedTab);
+      setActionSuccess(`Successfully synchronized all cases to Google Sheet.`);
+      setConfirmBatchPush(false);
+    } catch (err) {
+      setAuthError(err.message || "Failed to batch upload to Google Sheet.");
+    }
+  };
+
+  const handleApplyConfig = () => {
+    onUpdateSheetConfig(cleanId, selectedTab);
+    onClose();
   };
 
   const copyScript = () => {
@@ -562,119 +685,512 @@ function SyncSettingsModal({ url, onSave, onClose }) {
   };
 
   return (
-    <div style={{
-      position: "fixed", inset: 0, background: "rgba(15,18,23,.6)", display: "flex",
-      alignItems: "center", justifyContent: "center", padding: 16, zIndex: 70
-    }} onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} style={{
-        background: "#fff", borderRadius: 14, width: "100%", maxWidth: 680,
-        maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden",
-        boxShadow: "0 20px 40px rgba(0,0,0,0.2)"
-      }}>
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15,18,23,.65)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+        zIndex: 70,
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "#fff",
+          borderRadius: 14,
+          width: "100%",
+          maxWidth: 720,
+          maxHeight: "92vh",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          boxShadow: "0 24px 48px rgba(0,0,0,0.22)",
+        }}
+      >
         {/* Header */}
-        <div style={{
-          padding: "18px 24px", borderBottom: `1px solid ${COLOR.line}`,
-          display: "flex", alignItems: "center", justifyContent: "space-between"
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 32, height: 32, borderRadius: 8, background: COLOR.tealSoft, display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <FileSpreadsheet size={18} color={COLOR.tealDeep} />
+        <div
+          style={{
+            padding: "18px 24px",
+            borderBottom: `1px solid ${COLOR.line}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            background: "#FFFFFF",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 9,
+                background: COLOR.tealSoft,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <FileSpreadsheet size={20} color={COLOR.tealDeep} />
             </div>
             <div>
               <div style={{ fontFamily: "Fraunces, serif", fontSize: 18, fontWeight: 700, color: COLOR.ink }}>
-                Google Sheet Live 2-Way Synchronization
+                Google Sheets Integration &amp; 2-Way Sync
               </div>
               <div style={{ fontSize: 11.5, color: COLOR.inkSoft }}>
-                Sync all 30 child protection register fields in real-time
+                Connect directly to Google Workspace to read and write all 30 safeguarding fields
               </div>
             </div>
           </div>
-          <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", color: COLOR.inkSoft }}>
-            <X size={18} />
+          <button
+            onClick={onClose}
+            style={{
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              color: COLOR.inkSoft,
+              padding: 4,
+            }}
+          >
+            <X size={20} />
           </button>
         </div>
 
         {/* Tab switcher */}
-        <div style={{ display: "flex", borderBottom: `1px solid ${COLOR.line}`, background: "#FAFAF8", padding: "0 24px" }}>
+        <div
+          style={{
+            display: "flex",
+            borderBottom: `1px solid ${COLOR.line}`,
+            background: "#FAFAF8",
+            padding: "0 24px",
+          }}
+        >
           <button
-            onClick={() => setActiveTab("connect")}
+            onClick={() => setActiveTab("direct")}
             style={{
-              padding: "12px 16px", border: "none", background: "transparent", cursor: "pointer",
-              fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6,
-              borderBottom: activeTab === "connect" ? `2.5px solid ${COLOR.teal}` : "2.5px solid transparent",
-              color: activeTab === "connect" ? COLOR.tealDeep : COLOR.inkSoft
+              padding: "12px 16px",
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              fontWeight: 600,
+              fontSize: 13,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              borderBottom: activeTab === "direct" ? `2.5px solid ${COLOR.teal}` : "2.5px solid transparent",
+              color: activeTab === "direct" ? COLOR.tealDeep : COLOR.inkSoft,
             }}
           >
-            <Cloud size={15} /> Connection &amp; URL
+            <ShieldCheck size={15} /> Direct Google Sheets API (Recommended)
+          </button>
+          <button
+            onClick={() => setActiveTab("webhook")}
+            style={{
+              padding: "12px 16px",
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              fontWeight: 600,
+              fontSize: 13,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              borderBottom: activeTab === "webhook" ? `2.5px solid ${COLOR.teal}` : "2.5px solid transparent",
+              color: activeTab === "webhook" ? COLOR.tealDeep : COLOR.inkSoft,
+            }}
+          >
+            <Cloud size={15} /> Apps Script Webhook
           </button>
           <button
             onClick={() => setActiveTab("code")}
             style={{
-              padding: "12px 16px", border: "none", background: "transparent", cursor: "pointer",
-              fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6,
+              padding: "12px 16px",
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              fontWeight: 600,
+              fontSize: 13,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
               borderBottom: activeTab === "code" ? `2.5px solid ${COLOR.teal}` : "2.5px solid transparent",
-              color: activeTab === "code" ? COLOR.tealDeep : COLOR.inkSoft
+              color: activeTab === "code" ? COLOR.tealDeep : COLOR.inkSoft,
             }}
           >
-            <Code size={15} /> Apps Script Code &amp; Setup Guide
+            <Code size={15} /> Setup Script
           </button>
         </div>
 
         {/* Modal body */}
         <div style={{ padding: "20px 24px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
-          {activeTab === "connect" ? (
+          {activeTab === "direct" && (
+            <>
+              {/* Account Auth Card */}
+              <div
+                style={{
+                  background: googleUser ? "#F0F8F7" : "#FFFFFF",
+                  border: `1px solid ${googleUser ? COLOR.tealSoft : COLOR.line}`,
+                  borderRadius: 10,
+                  padding: "14px 18px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 16,
+                }}
+              >
+                {googleUser ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    {googleUser.photoURL ? (
+                      <img
+                        src={googleUser.photoURL}
+                        alt="Profile"
+                        referrerPolicy="no-referrer"
+                        style={{ width: 38, height: 38, borderRadius: "50%", border: `1px solid ${COLOR.teal}` }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          width: 38,
+                          height: 38,
+                          borderRadius: "50%",
+                          background: COLOR.tealDeep,
+                          color: "#fff",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontWeight: 700,
+                          fontSize: 14,
+                        }}
+                      >
+                        {(googleUser.displayName || googleUser.email || "U")[0].toUpperCase()}
+                      </div>
+                    )}
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13.5, color: COLOR.ink }}>
+                        {googleUser.displayName || "Google User"}
+                      </div>
+                      <div style={{ fontSize: 12, color: COLOR.inkSoft }}>
+                        {googleUser.email} &bull; <span style={{ color: COLOR.tealDeep, fontWeight: 600 }}>Connected with Sheets permissions</span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13.5, color: COLOR.ink }}>
+                      Google Workspace Authentication Required
+                    </div>
+                    <div style={{ fontSize: 12, color: COLOR.inkSoft }}>
+                      Sign in with Google to enable real-time reading, writing, and auto-syncing to your spreadsheet.
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  {googleUser ? (
+                    <button
+                      onClick={onGoogleLogout}
+                      style={{
+                        background: "#fff",
+                        color: COLOR.rose,
+                        border: `1px solid #F5C2C7`,
+                        borderRadius: 7,
+                        padding: "7px 12px",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <LogOut size={13} /> Sign Out
+                    </button>
+                  ) : (
+                    <GoogleSignInButton onClick={handleLoginClick} loading={isBusy} />
+                  )}
+                </div>
+              </div>
+
+              {/* Target Spreadsheet Input */}
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: COLOR.ink, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  Target Google Sheet URL or Spreadsheet ID
+                </label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input
+                    value={targetIdInput}
+                    onChange={(e) => setTargetIdInput(e.target.value)}
+                    placeholder="https://docs.google.com/spreadsheets/d/1usHttm2gWyLA11umygGUJwqwiqAQ-9iTDBVXoedapOc/edit"
+                    style={{
+                      flex: 1,
+                      padding: "9px 12px",
+                      borderRadius: 8,
+                      border: `1px solid ${COLOR.line}`,
+                      fontFamily: "IBM Plex Mono, monospace",
+                      fontSize: 12,
+                      outline: "none",
+                    }}
+                  />
+                  <a
+                    href={sheetUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      textDecoration: "none",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      background: "#fff",
+                      border: `1px solid ${COLOR.line}`,
+                      color: COLOR.tealDeep,
+                      borderRadius: 8,
+                      padding: "0 14px",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    <ExternalLink size={13} /> Open in Sheets
+                  </a>
+                </div>
+                <div style={{ fontSize: 11.5, color: COLOR.inkSoft, marginTop: 5 }}>
+                  Pre-configured to your Commission Safeguarding Register: <code style={{ color: COLOR.tealDeep, fontWeight: 600 }}>{cleanId}</code>
+                </div>
+              </div>
+
+              {/* Sheet Metadata / Tab Selection */}
+              {googleUser && (
+                <div
+                  style={{
+                    background: COLOR.paper,
+                    borderRadius: 10,
+                    padding: "14px 16px",
+                    border: `1px solid ${COLOR.line}`,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 12,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <FileSpreadsheet size={16} color={COLOR.tealDeep} />
+                      <span style={{ fontWeight: 700, fontSize: 13, color: COLOR.ink }}>
+                        {sheetMeta ? sheetMeta.title : "National Children's Commission Register"}
+                      </span>
+                    </div>
+                    <button
+                      onClick={fetchMetadata}
+                      disabled={loadingMeta}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: COLOR.tealDeep,
+                        fontSize: 11.5,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
+                      }}
+                    >
+                      <RefreshCw size={12} className={loadingMeta ? "animate-spin" : ""} /> Refresh info
+                    </button>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                    <div>
+                      <label style={{ display: "block", fontSize: 11.5, fontWeight: 600, color: COLOR.inkSoft, marginBottom: 4 }}>
+                        Active Tab / Sub-Sheet
+                      </label>
+                      <select
+                        value={selectedTab}
+                        onChange={(e) => setSelectedTab(e.target.value)}
+                        style={{
+                          width: "100%",
+                          padding: "7px 10px",
+                          borderRadius: 6,
+                          border: `1px solid ${COLOR.line}`,
+                          fontSize: 12.5,
+                          background: "#fff",
+                        }}
+                      >
+                        {availableTabs.length > 0 ? (
+                          availableTabs.map((t) => (
+                            <option key={t} value={t}>
+                              {t}
+                            </option>
+                          ))
+                        ) : (
+                          <>
+                            <option value="Sheet1">Sheet1</option>
+                            <option value="Cases">Cases</option>
+                          </>
+                        )}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label style={{ display: "block", fontSize: 11.5, fontWeight: 600, color: COLOR.inkSoft, marginBottom: 4 }}>
+                        30-Column Safeguarding Schema
+                      </label>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          padding: "7px 10px",
+                          background: "#fff",
+                          borderRadius: 6,
+                          border: `1px solid ${COLOR.line}`,
+                          color: COLOR.sage,
+                          fontWeight: 600,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                        }}
+                      >
+                        <CheckCircle2 size={14} color={COLOR.sage} /> 30 Standard Columns Active
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Actions row */}
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      marginTop: 4,
+                      paddingTop: 10,
+                      borderTop: `1px solid ${COLOR.line}`,
+                    }}
+                  >
+                    <Btn
+                      small
+                      variant="outline"
+                      icon={ArrowDownToLine}
+                      onClick={handlePullClick}
+                      disabled={isBusy}
+                    >
+                      Pull Cases from Sheet
+                    </Btn>
+
+                    {!confirmBatchPush ? (
+                      <Btn
+                        small
+                        variant="outline"
+                        icon={ArrowUpFromLine}
+                        onClick={() => setConfirmBatchPush(true)}
+                        disabled={isBusy}
+                      >
+                        Push All Local Cases to Sheet
+                      </Btn>
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 11.5, color: COLOR.rose, fontWeight: 600 }}>Overwrite sheet?</span>
+                        <Btn small variant="danger" onClick={handlePushAllClick} disabled={isBusy}>
+                          Yes, Push All
+                        </Btn>
+                        <button
+                          onClick={() => setConfirmBatchPush(false)}
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            fontSize: 11.5,
+                            color: COLOR.inkSoft,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Feedback messages */}
+              {authError && (
+                <div
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 8,
+                    fontSize: 12,
+                    background: COLOR.roseSoft,
+                    color: COLOR.rose,
+                    border: `1px solid #F5C2C7`,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <AlertCircle size={15} style={{ flexShrink: 0 }} />
+                  <div>{authError}</div>
+                </div>
+              )}
+
+              {actionSuccess && (
+                <div
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 8,
+                    fontSize: 12,
+                    background: "#EDF7F6",
+                    color: COLOR.tealDeep,
+                    border: `1px solid ${COLOR.tealSoft}`,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <CheckCircle size={15} style={{ flexShrink: 0 }} />
+                  <div>{actionSuccess}</div>
+                </div>
+              )}
+            </>
+          )}
+
+          {activeTab === "webhook" && (
             <>
               <div>
                 <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: COLOR.ink, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>
                   Google Apps Script Web App URL
                 </label>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input
-                    value={val}
-                    onChange={(e) => setVal(e.target.value)}
-                    placeholder="https://script.google.com/macros/s/.../exec"
-                    style={{
-                      flex: 1, padding: "10px 12px", borderRadius: 8, border: `1px solid ${COLOR.line}`,
-                      fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5, outline: "none"
-                    }}
-                  />
-                  <Btn small variant="outline" onClick={testConnection} disabled={testing || !val.trim()} icon={testing ? Loader2 : RefreshCw}>
-                    {testing ? "Testing…" : "Test Connection"}
-                  </Btn>
-                </div>
+                <input
+                  value={localWebhook}
+                  onChange={(e) => setLocalWebhook(e.target.value)}
+                  placeholder="https://script.google.com/macros/s/.../exec"
+                  style={{
+                    width: "100%",
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    border: `1px solid ${COLOR.line}`,
+                    fontFamily: "IBM Plex Mono, monospace",
+                    fontSize: 12.5,
+                    outline: "none",
+                    boxSizing: "border-box",
+                  }}
+                />
                 <div style={{ fontSize: 11.5, color: COLOR.inkSoft, marginTop: 6, lineHeight: 1.4 }}>
                   Ensure your Web App was deployed with <b>Execute as: Me</b> and <b>Who has access: Anyone</b>.
                 </div>
               </div>
 
-              {testResult && (
-                <div style={{
-                  padding: "12px 14px", borderRadius: 8, fontSize: 12.5, lineHeight: 1.5,
-                  background: testResult.ok ? "#EDF7F6" : COLOR.roseSoft,
-                  color: testResult.ok ? COLOR.tealDeep : COLOR.rose,
-                  border: `1px solid ${testResult.ok ? COLOR.tealSoft : "#F5C2C7"}`,
-                  display: "flex", gap: 10, alignItems: "flex-start"
-                }}>
-                  {testResult.ok ? <CheckCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} /> : <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} />}
-                  <div>
-                    <div style={{ fontWeight: 600, marginBottom: 2 }}>{testResult.ok ? "Connected & Ready" : "Connection Error"}</div>
-                    <div>{testResult.msg}</div>
-                  </div>
-                </div>
-              )}
-
               <div style={{ background: COLOR.paper, borderRadius: 10, padding: "14px 16px", border: `1px solid ${COLOR.line}` }}>
                 <div style={{ fontSize: 12.5, fontWeight: 700, color: COLOR.tealDeep, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
-                  <HelpCircle size={14} /> How it works:
+                  <HelpCircle size={14} /> Webhook Mode:
                 </div>
                 <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: COLOR.inkSoft, lineHeight: 1.6 }}>
-                  <li>Every case created, auto-filled, or edited immediately writes all 30 fields to your sheet.</li>
-                  <li>Clicking <b>"Pull latest"</b> pulls the updated register whenever your team collaborates.</li>
-                  <li>If your sheet is currently empty or missing columns, switch to the <b>"Apps Script Code"</b> tab and deploy the script.</li>
+                  <li>Sends POST/GET requests to your deployed Apps Script web app endpoint.</li>
+                  <li>Ideal for shared deployments where caseworkers do not individually sign in with Google.</li>
                 </ul>
               </div>
             </>
-          ) : (
+          )}
+
+          {activeTab === "code" && (
             <>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
@@ -693,15 +1209,23 @@ function SyncSettingsModal({ url, onSave, onClose }) {
                   <li>Delete any existing code, paste the script below, and click <b>Save</b> (Ctrl+S).</li>
                   <li>Click <b>Deploy &rarr; New deployment</b> &rarr; Click gear icon &rarr; Select <b>Web app</b>.</li>
                   <li>Set <b>Execute as:</b> <code>Me</code> and <b>Who has access:</b> <code>Anyone</code>.</li>
-                  <li>Click <b>Deploy</b>, authorize permissions, copy the Web App URL (ends in <code>/exec</code>), and paste it in the Connection tab!</li>
+                  <li>Click <b>Deploy</b>, authorize permissions, copy the Web App URL, and paste it in the Webhook tab!</li>
                 </ol>
               </div>
 
-              <pre style={{
-                background: "#1E252B", color: "#E6EDF3", padding: "14px 16px", borderRadius: 8,
-                fontSize: 11, fontFamily: "IBM Plex Mono, monospace", maxHeight: 240, overflowY: "auto",
-                lineHeight: 1.5
-              }}>
+              <pre
+                style={{
+                  background: "#1E252B",
+                  color: "#E6EDF3",
+                  padding: "14px 16px",
+                  borderRadius: 8,
+                  fontSize: 11,
+                  fontFamily: "IBM Plex Mono, monospace",
+                  maxHeight: 240,
+                  overflowY: "auto",
+                  lineHeight: 1.5,
+                }}
+              >
                 {COMPLETE_APPS_SCRIPT_CODE}
               </pre>
             </>
@@ -709,14 +1233,46 @@ function SyncSettingsModal({ url, onSave, onClose }) {
         </div>
 
         {/* Footer */}
-        <div style={{
-          padding: "14px 24px", borderTop: `1px solid ${COLOR.line}`, background: "#fff",
-          display: "flex", justifyContent: "flex-end", gap: 10
-        }}>
-          <Btn variant="ghost" small onClick={onClose}>Cancel</Btn>
-          <Btn small icon={Check} onClick={() => { onSave(val.trim()); onClose(); }}>
-            Save &amp; Connect
-          </Btn>
+        <div
+          style={{
+            padding: "14px 24px",
+            borderTop: `1px solid ${COLOR.line}`,
+            background: "#fff",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <div style={{ fontSize: 12, color: COLOR.inkSoft }}>
+            {googleUser ? (
+              <span style={{ color: COLOR.sage, fontWeight: 600, display: "flex", alignItems: "center", gap: 5 }}>
+                <CheckCircle2 size={14} /> Ready for live sync
+              </span>
+            ) : (
+              <span>Sign in to enable 2-way Google Sheets sync</span>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn variant="ghost" small onClick={onClose}>
+              Close
+            </Btn>
+            {activeTab === "direct" ? (
+              <Btn small icon={Check} onClick={handleApplyConfig}>
+                Apply &amp; Connect
+              </Btn>
+            ) : (
+              <Btn
+                small
+                icon={Check}
+                onClick={() => {
+                  onSaveWebhookUrl(localWebhook.trim());
+                  onClose();
+                }}
+              >
+                Save Webhook
+              </Btn>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -1217,6 +1773,7 @@ function Registry({ cases, onOpen, onImport, onExport, onDelete }) {
 /* ---------------------------------------------------------------------- */
 function CaseModal({ c, onClose, onUpdate, onDelete, onReport }) {
   const [edit, setEdit] = useState({ ...c });
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const groups = [...new Set(FIELDS.map((f) => f.group))];
 
   return (
@@ -1253,8 +1810,29 @@ function CaseModal({ c, onClose, onUpdate, onDelete, onReport }) {
           ))}
         </div>
 
+        {showDeleteConfirm && (
+          <div style={{
+            marginTop: 18, padding: "14px 16px", background: COLOR.roseSoft, borderRadius: 10,
+            border: `1px solid #F5C2C7`, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <AlertCircle size={18} color={COLOR.rose} style={{ flexShrink: 0 }} />
+              <div style={{ fontSize: 12.5, color: COLOR.rose, lineHeight: 1.4 }}>
+                <b>Permanently delete Case {c.caseId}?</b>
+                <div>This action will remove the record from both the local registry and the connected Google Sheet.</div>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Btn small variant="ghost" onClick={() => setShowDeleteConfirm(false)}>Cancel</Btn>
+              <Btn small variant="danger" onClick={() => { onDelete(c); onClose(); }}>Confirm Delete</Btn>
+            </div>
+          </div>
+        )}
+
         <div style={{ display: "flex", justifyContent: "space-between", marginTop: 22, paddingTop: 16, borderTop: `1px solid ${COLOR.line}` }}>
-          <Btn variant="danger" small onClick={() => { onDelete(c); onClose(); }}>Delete case</Btn>
+          {!showDeleteConfirm ? (
+            <Btn variant="danger" small onClick={() => setShowDeleteConfirm(true)}>Delete case</Btn>
+          ) : <div />}
           <Btn small onClick={() => { onUpdate(edit); onClose(); }} icon={Check}>Save changes</Btn>
         </div>
       </div>
@@ -1912,67 +2490,159 @@ export default function App() {
   const [openCase, setOpenCase] = useState(null);
   const [reportTarget, setReportTarget] = useState(null);
   const [importMsg, setImportMsg] = useState("");
-  const [syncUrl, setSyncUrl] = useState(null);
+  
+  // Google Workspace / Sheets state
+  const [googleUser, setGoogleUser] = useState(null);
+  const [spreadsheetId, setSpreadsheetId] = useState(DEFAULT_SPREADSHEET_ID);
+  const [sheetTab, setSheetTab] = useState("Sheet1");
   const [syncState, setSyncState] = useState("disconnected"); // disconnected | syncing | connected | error
   const [syncError, setSyncError] = useState("");
+  const [syncSuccessMsg, setSyncSuccessMsg] = useState("");
+  const [isBusy, setIsBusy] = useState(false);
   const [showSyncSettings, setShowSyncSettings] = useState(false);
+  const [webhookUrl, setWebhookUrl] = useState(null);
 
-  // Load saved sync URL (per-browser convenience — case data itself lives in the Sheet)
+  // Initialize auth listener
   useEffect(() => {
-    (async () => {
-      try {
-        const stored = await storage.get("gsheet_sync_url");
-        if (stored && stored.value) {
-          setSyncUrl(stored.value);
-          pullFromSheet(stored.value);
-        }
-      } catch (e) { /* no saved URL yet */ }
-    })();
-  }, []);
+    const unsub = initAuth((user) => {
+      setGoogleUser(user);
+      if (user) {
+        // Attempt initial pull from default sheet
+        pullDirectFromGoogle(spreadsheetId, sheetTab);
+      } else {
+        setSyncState("disconnected");
+      }
+    });
+    return () => unsub();
+  }, [spreadsheetId, sheetTab]);
 
-  const pullFromSheet = async (url) => {
+  // Pull records directly from Google Sheets API
+  const pullDirectFromGoogle = async (targetId = spreadsheetId, targetTab = sheetTab) => {
+    const cleanId = extractSpreadsheetId(targetId);
     setSyncState("syncing");
     setSyncError("");
+    setSyncSuccessMsg("");
+    setIsBusy(true);
     try {
-      const remote = await sheetPull(url);
-      setCases(remote);
+      const rows = await pullCasesFromGoogleSheet(cleanId, targetTab);
+      if (rows && rows.length > 0) {
+        setCases(rows);
+        setSyncSuccessMsg(`Pulled ${rows.length} record(s) from Google Sheet.`);
+      } else {
+        setSyncSuccessMsg(`Google Sheet connected (0 records found in ${targetTab}).`);
+      }
       setSyncState("connected");
-    } catch (e) {
-      setSyncState("error");
-      setSyncError("Couldn't reach the sheet. Check the Web App URL and that it's deployed with 'Anyone' access.");
+      setTimeout(() => setSyncSuccessMsg(""), 4000);
+      return rows ? rows.length : 0;
+    } catch (err) {
+      console.warn("Direct pull error:", err);
+      // Fallback: If webhookUrl is set, try fallback
+      if (webhookUrl) {
+        try {
+          const remote = await sheetPull(webhookUrl);
+          setCases(remote);
+          setSyncState("connected");
+          return remote.length;
+        } catch (e2) {
+          setSyncState("error");
+          setSyncError(err.message || "Failed to pull from Google Sheet.");
+          throw err;
+        }
+      } else {
+        setSyncState("error");
+        setSyncError(err.message || "Failed to pull from Google Sheet.");
+        throw err;
+      }
+    } finally {
+      setIsBusy(false);
     }
   };
 
-  const saveSyncUrl = async (url) => {
-    setSyncUrl(url || null);
-    try { await storage.set("gsheet_sync_url", url); } catch (e) {}
-    if (url) pullFromSheet(url);
-    else setSyncState("disconnected");
+  // Push all local records to Google Sheet
+  const pushAllDirectToGoogle = async (targetId = spreadsheetId, targetTab = sheetTab) => {
+    const cleanId = extractSpreadsheetId(targetId);
+    setSyncState("syncing");
+    setSyncError("");
+    setIsBusy(true);
+    try {
+      await syncAllCasesToGoogleSheet(cleanId, targetTab, cases);
+      setSyncState("connected");
+      setSyncSuccessMsg(`Successfully synced ${cases.length} cases to Google Sheet.`);
+      setTimeout(() => setSyncSuccessMsg(""), 4000);
+    } catch (err) {
+      setSyncState("error");
+      setSyncError(err.message || "Failed to push cases to Google Sheet.");
+      throw err;
+    } finally {
+      setIsBusy(false);
+    }
   };
 
-  const pushToSheet = async (action, payload) => {
-    if (!syncUrl) return;
+  // Push single mutation (upsert or delete) to Sheet
+  const pushMutationToSheet = async (action, caseObjOrId) => {
     setSyncState("syncing");
     try {
-      await sheetPush(syncUrl, action, payload);
-      setSyncState("connected");
-    } catch (e) {
+      if (googleUser || getAccessToken()) {
+        if (action === "upsert") {
+          await pushCaseToGoogleSheet(spreadsheetId, sheetTab, caseObjOrId);
+        } else if (action === "delete") {
+          const id = typeof caseObjOrId === "object" ? caseObjOrId.caseId : caseObjOrId;
+          await deleteCaseFromGoogleSheet(spreadsheetId, sheetTab, id);
+        }
+        setSyncState("connected");
+      } else if (webhookUrl) {
+        await sheetPush(webhookUrl, action, caseObjOrId);
+        setSyncState("connected");
+      } else {
+        setSyncState("disconnected");
+      }
+    } catch (err) {
+      console.error("Mutation sync error:", err);
       setSyncState("error");
-      setSyncError("Saved locally, but the write to the sheet failed. Try 'Pull latest' once it's reachable again.");
+      setSyncError(`Saved locally, but write to Google Sheet failed: ${err.message || "Network issue"}`);
     }
+  };
+
+  const handleGoogleLogin = async () => {
+    setIsBusy(true);
+    setSyncError("");
+    try {
+      const user = await googleSignIn();
+      setGoogleUser(user);
+      await pullDirectFromGoogle(spreadsheetId, sheetTab);
+    } catch (err) {
+      setSyncError(err.message || "Google Sign-In failed.");
+      throw err;
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleGoogleLogout = async () => {
+    await logout();
+    setGoogleUser(null);
+    setSyncState("disconnected");
+  };
+
+  const updateSheetConfig = (newId, newTab) => {
+    setSpreadsheetId(newId);
+    setSheetTab(newTab);
+    pullDirectFromGoogle(newId, newTab);
   };
 
   const addCase = (c) => {
-    setCases((cs) => [...cs, c]);
-    pushToSheet("upsert", c);
+    setCases((cs) => [c, ...cs]);
+    pushMutationToSheet("upsert", c);
   };
+
   const updateCase = (updated) => {
     setCases((cs) => cs.map((c) => (c.caseId === updated.caseId ? updated : c)));
-    pushToSheet("upsert", updated);
+    pushMutationToSheet("upsert", updated);
   };
+
   const deleteCase = (target) => {
     setCases((cs) => cs.filter((c) => c.caseId !== target.caseId));
-    pushToSheet("delete", target.caseId);
+    pushMutationToSheet("delete", target.caseId);
   };
 
   const handleImport = (file) => {
@@ -1994,7 +2664,7 @@ export default function App() {
           if (!obj.caseId) obj.caseId = generateCaseId([...cases, ...imported]);
           imported.push(obj);
         }
-        setCases((cs) => [...cs, ...imported]);
+        setCases((cs) => [...imported, ...cs]);
         setImportMsg(`Imported ${imported.length} case${imported.length === 1 ? "" : "s"}.`);
         setTimeout(() => setImportMsg(""), 4000);
       },
@@ -2020,77 +2690,220 @@ export default function App() {
     { id: "analytics", label: "Analytics", icon: Sparkles },
   ];
 
+  const currentSheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+
   return (
     <div style={{ fontFamily: "Inter, sans-serif", background: COLOR.paper, minHeight: "100%", color: COLOR.ink }}>
       <style>{FONTS_IMPORT}</style>
 
+      {/* Top Navbar */}
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "16px 24px", borderBottom: `1px solid ${COLOR.line}`, background: "#fff"
+        padding: "14px 24px", borderBottom: `1px solid ${COLOR.line}`, background: "#fff", flexWrap: "wrap", gap: 12
       }}>
+        {/* Brand */}
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 34, height: 34, borderRadius: 9, background: COLOR.tealDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <ShieldCheck size={18} color="#fff" />
+          <div style={{ width: 36, height: 36, borderRadius: 9, background: COLOR.tealDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <ShieldCheck size={20} color="#fff" />
           </div>
           <div>
-            <div style={{ fontFamily: "Fraunces, serif", fontWeight: 700, fontSize: 16.5, lineHeight: 1.1 }}>National Children's Commission</div>
+            <div style={{ fontFamily: "Fraunces, serif", fontWeight: 700, fontSize: 16.5, lineHeight: 1.1, color: COLOR.ink }}>
+              National Children's Commission
+            </div>
             <div style={{ fontSize: 11, color: COLOR.inkSoft }}>Child Protection Case Register &amp; Tracking</div>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 6 }}>
+
+        {/* Center / Navigation Tabs */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {NAV.map((n) => (
-            <button key={n.id} onClick={() => setTab(n.id)} style={{
-              display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8,
-              border: "none", cursor: "pointer", fontFamily: "Inter, sans-serif", fontWeight: 600, fontSize: 13,
-              background: tab === n.id ? COLOR.tealSoft : "transparent",
-              color: tab === n.id ? COLOR.tealDeep : COLOR.inkSoft,
-            }}>
+            <button
+              key={n.id}
+              onClick={() => setTab(n.id)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "8px 14px",
+                borderRadius: 8,
+                border: "none",
+                cursor: "pointer",
+                fontFamily: "Inter, sans-serif",
+                fontWeight: 600,
+                fontSize: 13,
+                background: tab === n.id ? COLOR.tealSoft : "transparent",
+                color: tab === n.id ? COLOR.tealDeep : COLOR.inkSoft,
+              }}
+            >
               <n.icon size={15} /> {n.label}
             </button>
           ))}
-          <div style={{ width: 1, background: COLOR.line, margin: "0 4px" }} />
+          <div style={{ width: 1, height: 24, background: COLOR.line, margin: "0 4px" }} />
           <Btn small variant="outline" icon={FileText} onClick={() => setReportTarget("ALL")} disabled={cases.length === 0}>
             All-cases report
           </Btn>
-          {syncUrl && (
-            <Btn small variant="outline" icon={RefreshCw} onClick={() => pullFromSheet(syncUrl)}>
-              Pull latest
-            </Btn>
-          )}
-          <button onClick={() => setShowSyncSettings(true)} title="Google Sheet sync settings" style={{
-            display: "flex", alignItems: "center", gap: 6, padding: "8px 12px", borderRadius: 8,
-            border: `1px solid ${COLOR.line}`, background: "#fff", cursor: "pointer",
-            fontFamily: "Inter, sans-serif", fontSize: 12.5, fontWeight: 600,
-            color: syncState === "connected" ? COLOR.sage : syncState === "error" ? COLOR.rose : COLOR.inkSoft,
-          }}>
-            {syncState === "syncing" ? <Loader2 size={14} className="animate-spin" /> :
-             syncState === "connected" ? <Cloud size={14} /> :
-             syncState === "error" ? <CloudOff size={14} /> : <Settings size={14} />}
-            {syncState === "connected" ? "Synced to Sheet" :
-             syncState === "syncing" ? "Syncing…" :
-             syncState === "error" ? "Sync error" : "Connect Sheet"}
+        </div>
+
+        {/* Right / Google Sheets & Account Status */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Pull Latest button */}
+          <Btn
+            small
+            variant="outline"
+            icon={isBusy ? Loader2 : RefreshCw}
+            onClick={() => pullDirectFromGoogle()}
+            disabled={isBusy}
+            title="Pull latest records from connected Google Sheet"
+          >
+            {isBusy ? "Syncing…" : "Pull latest"}
+          </Btn>
+
+          {/* Connected Sheet Status Badge */}
+          <button
+            onClick={() => setShowSyncSettings(true)}
+            title="Google Sheets 2-Way Sync Settings"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "7px 12px",
+              borderRadius: 8,
+              border: `1px solid ${COLOR.line}`,
+              background: syncState === "connected" ? "#F0F8F7" : "#fff",
+              cursor: "pointer",
+              fontFamily: "Inter, sans-serif",
+              fontSize: 12,
+              fontWeight: 600,
+              color: syncState === "connected" ? COLOR.tealDeep : syncState === "error" ? COLOR.rose : COLOR.inkSoft,
+            }}
+          >
+            {syncState === "syncing" ? (
+              <Loader2 size={14} className="animate-spin" color={COLOR.teal} />
+            ) : syncState === "connected" ? (
+              <FileSpreadsheet size={14} color={COLOR.tealDeep} />
+            ) : syncState === "error" ? (
+              <CloudOff size={14} color={COLOR.rose} />
+            ) : (
+              <Settings size={14} />
+            )}
+            <span>
+              {syncState === "connected"
+                ? "Sheet Connected"
+                : syncState === "syncing"
+                ? "Syncing…"
+                : syncState === "error"
+                ? "Sync Issue"
+                : "Connect Sheet"}
+            </span>
           </button>
+
+          {/* User Profile or Google Sign In */}
+          {googleUser ? (
+            <div
+              onClick={() => setShowSyncSettings(true)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "4px 8px 4px 4px",
+                borderRadius: 20,
+                background: COLOR.paper,
+                border: `1px solid ${COLOR.line}`,
+                cursor: "pointer",
+              }}
+              title={`Signed in as ${googleUser.email}`}
+            >
+              {googleUser.photoURL ? (
+                <img
+                  src={googleUser.photoURL}
+                  alt="Avatar"
+                  referrerPolicy="no-referrer"
+                  style={{ width: 26, height: 26, borderRadius: "50%" }}
+                />
+              ) : (
+                <div
+                  style={{
+                    width: 26,
+                    height: 26,
+                    borderRadius: "50%",
+                    background: COLOR.tealDeep,
+                    color: "#fff",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  {(googleUser.displayName || googleUser.email || "U")[0].toUpperCase()}
+                </div>
+              )}
+              <span style={{ fontSize: 12, fontWeight: 600, color: COLOR.ink, maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {googleUser.displayName || googleUser.email.split("@")[0]}
+              </span>
+            </div>
+          ) : (
+            <GoogleSignInButton onClick={handleGoogleLogin} loading={isBusy} label="Sign in" />
+          )}
         </div>
       </div>
 
+      {/* Sync Banners */}
       {syncError && (
-        <div style={{ background: COLOR.roseSoft, color: COLOR.rose, padding: "8px 24px", fontSize: 12.5 }}>{syncError}</div>
+        <div style={{
+          background: COLOR.roseSoft, color: COLOR.rose, padding: "10px 24px", fontSize: 12.5,
+          display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid #F5C2C7`
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <AlertCircle size={15} style={{ flexShrink: 0 }} />
+            <span>{syncError}</span>
+          </div>
+          <button
+            onClick={() => setShowSyncSettings(true)}
+            style={{
+              background: "transparent", border: "none", color: COLOR.rose, fontWeight: 700,
+              fontSize: 12, cursor: "pointer", textDecoration: "underline"
+            }}
+          >
+            Open Settings
+          </button>
+        </div>
+      )}
+
+      {syncSuccessMsg && (
+        <div style={{
+          background: "#EDF7F6", color: COLOR.tealDeep, padding: "8px 24px", fontSize: 12.5,
+          display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${COLOR.tealSoft}`
+        }}>
+          <CheckCircle2 size={15} color={COLOR.tealDeep} />
+          <span>{syncSuccessMsg}</span>
+        </div>
       )}
 
       {importMsg && (
-        <div style={{ background: COLOR.tealSoft, color: COLOR.tealDeep, padding: "8px 24px", fontSize: 12.5 }}>{importMsg}</div>
+        <div style={{ background: COLOR.tealSoft, color: COLOR.tealDeep, padding: "8px 24px", fontSize: 12.5 }}>
+          {importMsg}
+        </div>
       )}
 
+      {/* Main Body */}
       <div style={{ padding: "22px 24px 60px" }}>
         {cases.length === 0 && tab !== "entry" && (
           <div style={{
-            background: COLOR.amberSoft, color: "#7A4B14", borderRadius: 10, padding: "10px 14px",
-            fontSize: 12.5, marginBottom: 16, display: "flex", alignItems: "center", gap: 8
+            background: COLOR.amberSoft, color: "#7A4B14", borderRadius: 10, padding: "12px 16px",
+            fontSize: 12.5, marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between"
           }}>
-            <AlertCircle size={14} />
-            {syncUrl
-              ? "No cases found in the connected sheet yet, or still loading."
-              : "No cases loaded. Connect your Google Sheet (top right) for live sync, or import a CSV from the Registry tab."}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <AlertCircle size={15} />
+              <span>
+                {googleUser
+                  ? "Connected to Google Sheet, but no case records were found in this sheet yet."
+                  : "No cases loaded in current session. Sign in with Google to sync with your National Case Register spreadsheet, or enter a new case."}
+              </span>
+            </div>
+            {!googleUser && (
+              <GoogleSignInButton onClick={handleGoogleLogin} loading={isBusy} label="Connect with Google" />
+            )}
           </div>
         )}
         {tab === "entry" && <EntryForm cases={cases} onSave={addCase} />}
@@ -2100,24 +2913,63 @@ export default function App() {
         {tab === "analytics" && <Analytics cases={cases} />}
       </div>
 
+      {/* Persistent Footer Bar */}
       <div style={{
         position: "fixed", bottom: 0, left: 0, right: 0, background: COLOR.tealDeep, color: "#DCE9E7",
-        fontSize: 11.5, padding: "8px 24px", display: "flex", justifyContent: "space-between", fontFamily: "Inter, sans-serif"
+        fontSize: 11.5, padding: "8px 24px", display: "flex", justifyContent: "space-between", alignItems: "center",
+        fontFamily: "Inter, sans-serif", zIndex: 30
       }}>
-        <span>{syncUrl ? "Connected — every change writes to your Google Sheet automatically." : "Not connected to your Sheet yet — click 'Connect Sheet' above, or export CSV before closing to keep your records."}</span>
-        <span>{cases.length} case{cases.length === 1 ? "" : "s"} in session</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span>
+            {googleUser
+              ? `Connected to Google Sheet (${spreadsheetId.slice(0, 8)}…)`
+              : "Local Session Mode — Click 'Sign in with Google' to sync directly with your Google Sheet."}
+          </span>
+          <a
+            href={currentSheetUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: "#8AE0D6", textDecoration: "underline", display: "flex", alignItems: "center", gap: 3 }}
+          >
+            Open Sheet <ExternalLink size={11} />
+          </a>
+        </div>
+        <span>{cases.length} safeguarding case{cases.length === 1 ? "" : "s"} in register</span>
       </div>
 
+      {/* Modals */}
       {openCase && (
-        <CaseModal c={openCase} onClose={() => setOpenCase(null)} onUpdate={updateCase} onDelete={deleteCase}
-          onReport={(c) => setReportTarget(c)} />
+        <CaseModal
+          c={openCase}
+          onClose={() => setOpenCase(null)}
+          onUpdate={updateCase}
+          onDelete={deleteCase}
+          onReport={(c) => setReportTarget(c)}
+        />
       )}
       {reportTarget && (
-        <ReportModal target={reportTarget} cases={reportTarget === "ALL" ? cases : cases}
-          onClose={() => setReportTarget(null)} />
+        <ReportModal
+          target={reportTarget}
+          cases={reportTarget === "ALL" ? cases : cases}
+          onClose={() => setReportTarget(null)}
+        />
       )}
       {showSyncSettings && (
-        <SyncSettingsModal url={syncUrl} onSave={saveSyncUrl} onClose={() => setShowSyncSettings(false)} />
+        <SyncSettingsModal
+          spreadsheetId={spreadsheetId}
+          sheetTab={sheetTab}
+          onUpdateSheetConfig={updateSheetConfig}
+          googleUser={googleUser}
+          onGoogleLogin={handleGoogleLogin}
+          onGoogleLogout={handleGoogleLogout}
+          webhookUrl={webhookUrl}
+          onSaveWebhookUrl={(url) => setWebhookUrl(url)}
+          onPullDirect={pullDirectFromGoogle}
+          onPushAllDirect={pushAllDirectToGoogle}
+          onClose={() => setShowSyncSettings(false)}
+          isBusy={isBusy}
+          statusMessage={syncSuccessMsg}
+        />
       )}
     </div>
   );
